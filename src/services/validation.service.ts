@@ -381,6 +381,60 @@ export class ValidationService {
   }
 
   /**
+   * Validate list media query parameters
+   */
+  validateListMediaQueryParams(params: {
+    userId?: string;
+    mediaType?: string;
+    limit?: string;
+    continuationToken?: string;
+  }): void {
+    const errors: string[] = [];
+
+    // Validate userId (required)
+    if (!params.userId || typeof params.userId !== 'string') {
+      errors.push('userId is required');
+    } else {
+      try {
+        this.validateUserId(params.userId);
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          errors.push(error.message);
+        }
+      }
+    }
+
+    // Validate mediaType (optional)
+    if (params.mediaType) {
+      if (params.mediaType !== 'visual' && params.mediaType !== 'audio') {
+        errors.push('mediaType must be either "visual" or "audio"');
+      }
+    }
+
+    // Validate limit (optional)
+    if (params.limit) {
+      const limitNum = parseInt(params.limit, 10);
+      if (isNaN(limitNum)) {
+        errors.push('limit must be a valid number');
+      } else if (limitNum < 1 || limitNum > 1000) {
+        errors.push('limit must be between 1 and 1000');
+      }
+    }
+
+    // continuationToken is just a string, no specific validation needed
+
+    if (errors.length > 0) {
+      throw new ValidationError(
+        'List media validation failed',
+        ErrorCode.INVALID_REQUEST,
+        { validationErrors: errors }
+      );
+    }
+
+    logger.debug('List media query params validation successful');
+  }
+
+  /**
    * Format bytes to human-readable format
    */
   private formatBytes(bytes: number): string {

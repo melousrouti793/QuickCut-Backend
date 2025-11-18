@@ -42,6 +42,17 @@ export interface CompleteUploadRequest {
   parts: UploadPart[];
 }
 
+export interface ListMediaQueryParams {
+  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
+  userId: string;
+  /** Filter by media type (visual or audio) */
+  mediaType?: 'visual' | 'audio';
+  /** Number of items per page (default: 50, max: 1000) */
+  limit?: number;
+  /** Continuation token for pagination */
+  continuationToken?: string;
+}
+
 export interface AuthContext {
   /** User ID from the authorizer */
   userId: string;
@@ -118,6 +129,38 @@ export interface CompleteSuccessResponse {
   message: string;
   /** Completed upload data */
   data: CompletedUpload;
+}
+
+export interface MediaFileInfo {
+  /** S3 key for the file */
+  fileKey: string;
+  /** Original filename */
+  filename: string;
+  /** Media type (visual or audio) */
+  mediaType: 'visual' | 'audio';
+  /** File size in bytes */
+  size: number;
+  /** Upload timestamp */
+  uploadedAt: string;
+  /** S3 URL for the file */
+  url: string;
+}
+
+export interface ListMediaSuccessResponse {
+  /** HTTP status code */
+  statusCode: 200;
+  /** Success message */
+  message: string;
+  /** List of media files */
+  data: {
+    files: MediaFileInfo[];
+    /** Number of files returned */
+    count: number;
+    /** Whether more results are available */
+    hasMore: boolean;
+    /** Token for next page */
+    nextToken?: string;
+  };
 }
 
 export interface ErrorResponse {

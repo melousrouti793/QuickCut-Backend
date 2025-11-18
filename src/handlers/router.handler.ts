@@ -6,6 +6,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { handler as initiateHandler } from './upload.handler';
 import { handler as completeHandler } from './complete.handler';
+import { handler as listMediaHandler } from './list-media.handler';
 import { logger } from '../utils/logger';
 
 /**
@@ -29,39 +30,28 @@ export async function handler(
     requestId: event.requestContext.requestId,
   });
 
-  // Check HTTP method - only POST is allowed
-  if (method !== 'POST') {
-    logger.warn('Method not allowed', { method, path });
-    return {
-      statusCode: 405,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-        'Allow': 'POST',
-      },
-      body: JSON.stringify({
-        statusCode: 405,
-        errorCode: 'METHOD_NOT_ALLOWED',
-        message: 'Method Not Allowed',
-        details: {
-          allowedMethods: ['POST'],
-          receivedMethod: method,
-        },
-      }),
-    };
-  }
-
-  // Route based on path
+  // Route based on path and method
   switch (path) {
     case '/upload/initiate':
+      if (method !== 'POST') {
+        return methodNotAllowedResponse(['POST'], method);
+      }
       logger.debug('Routing to initiate handler');
       return await initiateHandler(event);
 
     case '/upload/complete':
+      if (method !== 'POST') {
+        return methodNotAllowedResponse(['POST'], method);
+      }
       logger.debug('Routing to complete handler');
       return await completeHandler(event);
+
+    case '/media':
+      if (method !== 'GET') {
+        return methodNotAllowedResponse(['GET'], method);
+      }
+      logger.debug('Routing to list media handler');
+      return await listMediaHandler(event);
 
     default:
       logger.warn('Route not found', { path });
@@ -78,9 +68,38 @@ export async function handler(
           message: 'Not Found',
           details: {
             path,
-            availableRoutes: ['/upload/initiate', '/upload/complete'],
+            availableRoutes: ['/upload/initiate', '/upload/complete', '/media'],
           },
         }),
       };
   }
+}
+
+/**
+ * Return a 405 Method Not Allowed response
+ */
+function methodNotAllowedResponse(
+  allowedMethods: string[],
+  receivedMethod: string
+): APIGatewayProxyResultV2 {
+  logger.warn('Method not allowed', { allowedMethods, receivedMethod });
+  return {
+    statusCode: 405,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': allowedMethods.join(',') + ',OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+      'Allow': allowedMethods.join(','),
+    },
+    body: JSON.stringify({
+      statusCode: 405,
+      errorCode: 'METHOD_NOT_ALLOWED',
+      message: 'Method Not Allowed',
+      details: {
+        allowedMethods,
+        receivedMethod,
+      },
+    }),
+  };
 }

@@ -10,6 +10,8 @@ import {
   CompleteMultipartUploadCommand,
   UploadPartCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
+  GetObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
@@ -24,6 +26,8 @@ import {
   UploadPart,
   CompletedUpload,
   S3UploadMetadata,
+  MediaFileInfo,
+  ListMediaQueryParams,
 } from '../types';
 
 export class S3Service {
@@ -86,7 +90,7 @@ export class S3Service {
     userId: string
   ): Promise<UploadConfiguration> {
     const fileId = uuidv4();
-    const s3Key = this.generateS3Key(userId, fileId, file.filename);
+    const s3Key = this.generateS3Key(userId, fileId, file.filename, file.fileType);
 
     logger.debug('Initiating multipart upload', {
       fileId,
@@ -158,23 +162,44 @@ export class S3Service {
   }
 
   /**
+   * Determine media type prefix from MIME type
+   * - visual: for images and videos
+   * - audio: for audio files
+   */
+  private getMediaTypePrefix(mimeType: string): 'visual' | 'audio' {
+    const normalizedMimeType = mimeType.toLowerCase().trim();
+
+    if (normalizedMimeType.startsWith('audio/')) {
+      return 'audio';
+    }
+
+    // video/ and image/ both map to 'visual'
+    // Default to 'visual' for any other types
+    return 'visual';
+  }
+
+  /**
    * Generate S3 key following naming convention
-   * Pattern: {prefix}/{userId}/{year}/{month}/{day}/{fileId}/{sanitizedFilename}
+   * Pattern: {prefix}/{userId}/{mediaType}/{year}/{month}/{day}/{fileId}/{sanitizedFilename}
    */
   private generateS3Key(
     userId: string,
     fileId: string,
-    filename: string
+    filename: string,
+    mimeType: string
   ): string {
     const now = new Date();
     const year = now.getUTCFullYear();
     const month = String(now.getUTCMonth() + 1).padStart(2, '0');
     const day = String(now.getUTCDate()).padStart(2, '0');
 
+    // Get media type prefix (visual or audio)
+    const mediaType = this.getMediaTypePrefix(mimeType);
+
     // Sanitize filename for S3
     const sanitizedFilename = this.sanitizeFilename(filename);
 
-    return `${s3Config.keyPrefix}/${userId}/${year}/${month}/${day}/${fileId}/${sanitizedFilename}`;
+    return `${s3Config.keyPrefix}/${userId}/${mediaType}/${year}/${month}/${day}/${fileId}/${sanitizedFilename}`;
   }
 
   /**
@@ -250,6 +275,22 @@ export class S3Service {
       partNumber,
       url,
     };
+  }
+
+  /**
+   * Generate a presigned GET URL for downloading a file
+   */
+  private async generatePresignedGetUrl(s3Key: string): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: s3Config.bucketName,
+      Key: s3Key,
+    });
+
+    const url = await getSignedUrl(this.s3Client, command, {
+      expiresIn: s3Config.presignedUrlExpiry,
+    });
+
+    return url;
   }
 
   /**
@@ -404,12 +445,12 @@ export class S3Service {
 
   /**
    * Extract user ID from S3 key
-   * S3 key format: {prefix}/{userId}/{year}/{month}/{day}/{fileId}/{filename}
+   * S3 key format: {prefix}/{userId}/{mediaType}/{year}/{month}/{day}/{fileId}/{filename}
    */
   extractUserIdFromS3Key(s3Key: string): string | null {
     try {
       const parts = s3Key.split('/');
-      // Expected format: uploads/userId/year/month/day/fileId/filename
+      // Expected format: uploads/userId/mediaType/year/month/day/fileId/filename
       if (parts.length >= 2) {
         return parts[1]; // userId is at index 1
       }
@@ -437,6 +478,104 @@ export class S3Service {
       userId,
     });
     return null;
+  }
+
+  /**
+   * List media files for a user with optional filtering and pagination
+   */
+  async listMediaFiles(params: ListMediaQueryParams): Promise<{
+    files: MediaFileInfo[];
+    hasMore: boolean;
+    nextToken?: string;
+  }> {
+    const { userId, mediaType, limit = 50, continuationToken } = params;
+
+    // Build S3 prefix based on parameters
+    let prefix = `${s3Config.keyPrefix}/${userId}/`;
+    if (mediaType) {
+      prefix += `${mediaType}/`;
+    }
+
+    logger.info('Listing media files', {
+      userId,
+      mediaType,
+      prefix,
+      limit,
+    });
+
+    try {
+      const command = new ListObjectsV2Command({
+        Bucket: s3Config.bucketName,
+        Prefix: prefix,
+        MaxKeys: limit,
+        ContinuationToken: continuationToken,
+      });
+
+      const response = await this.s3Client.send(command);
+
+      // Transform S3 objects to MediaFileInfo with presigned URLs
+      const filePromises = (response.Contents || []).map(async (obj) => {
+        const fileKey = obj.Key || '';
+        const filename = this.extractFilenameFromKey(fileKey);
+        const extractedMediaType = this.extractMediaTypeFromKey(fileKey);
+
+        // Generate presigned GET URL for the file
+        const url = await this.generatePresignedGetUrl(fileKey);
+
+        return {
+          fileKey,
+          filename,
+          mediaType: extractedMediaType,
+          size: obj.Size || 0,
+          uploadedAt: obj.LastModified?.toISOString() || new Date().toISOString(),
+          url,
+        };
+      });
+
+      const files = await Promise.all(filePromises);
+
+      logger.info('Media files listed successfully', {
+        count: files.length,
+        hasMore: response.IsTruncated || false,
+      });
+
+      return {
+        files,
+        hasMore: response.IsTruncated || false,
+        nextToken: response.NextContinuationToken,
+      };
+    } catch (error) {
+      logger.error('Failed to list media files', error, { userId, mediaType });
+      throw new S3ServiceError('Failed to list media files from S3', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
+      });
+    }
+  }
+
+  /**
+   * Extract filename from S3 key
+   * S3 key format: uploads/userId/mediaType/year/month/day/fileId/filename
+   */
+  private extractFilenameFromKey(s3Key: string): string {
+    const parts = s3Key.split('/');
+    return parts[parts.length - 1] || '';
+  }
+
+  /**
+   * Extract media type from S3 key
+   * S3 key format: uploads/userId/mediaType/year/month/day/fileId/filename
+   */
+  private extractMediaTypeFromKey(s3Key: string): 'visual' | 'audio' {
+    const parts = s3Key.split('/');
+    // mediaType is at index 2: uploads/userId/mediaType/...
+    if (parts.length >= 3) {
+      const mediaType = parts[2];
+      if (mediaType === 'audio') {
+        return 'audio';
+      }
+    }
+    return 'visual'; // Default to visual
   }
 
   /**
