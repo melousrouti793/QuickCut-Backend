@@ -15,11 +15,18 @@ export interface MediaFile {
   fileSize: number;
 }
 
+export interface MediaFileWithThumbnail {
+  /** Main file (video, image, or audio) */
+  main: MediaFile;
+  /** Optional thumbnail (only for visual media like videos) */
+  thumbnail?: MediaFile;
+}
+
 export interface UploadRequest {
   /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
   userId: string;
-  /** Array of media files to upload */
-  files: MediaFile[];
+  /** Array of media files to upload (with optional thumbnails) */
+  files: MediaFileWithThumbnail[];
 }
 
 export interface UploadPart {
@@ -92,6 +99,13 @@ export interface UploadConfiguration {
   expiresAt: string;
 }
 
+export interface UploadConfigurationWithThumbnail {
+  /** Upload configuration for the main file */
+  main: UploadConfiguration;
+  /** Upload configuration for the thumbnail (if provided) */
+  thumbnail?: UploadConfiguration;
+}
+
 export interface CompletedUpload {
   /** Unique identifier for the file */
   fileId: string;
@@ -114,10 +128,10 @@ export interface SuccessResponse {
   statusCode: 200;
   /** Success message */
   message: string;
-  /** Array of upload configurations */
+  /** Array of upload configurations with optional thumbnails */
   data: {
-    uploads: UploadConfiguration[];
-    /** Total number of files */
+    uploads: UploadConfigurationWithThumbnail[];
+    /** Total number of media items (each may have main + thumbnail) */
     totalFiles: number;
   };
 }
@@ -144,6 +158,8 @@ export interface MediaFileInfo {
   uploadedAt: string;
   /** S3 URL for the file */
   url: string;
+  /** Presigned URL for thumbnail (always present for visual media, null for audio) */
+  thumbnailUrl: string | null;
 }
 
 export interface ListMediaSuccessResponse {
@@ -239,6 +255,124 @@ export interface ValidationResult {
 }
 
 // ============================================================================
+// Delete Media Types
+// ============================================================================
+
+export interface DeleteMediaRequest {
+  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
+  userId: string;
+  /** Array of S3 file keys to delete */
+  fileKeys: string[];
+}
+
+export interface DeleteResult {
+  /** S3 file key */
+  fileKey: string;
+  /** Whether deletion succeeded */
+  success: boolean;
+  /** Error message if deletion failed */
+  error?: string;
+}
+
+export interface DeleteMediaData {
+  /** Successfully deleted file keys */
+  deleted: string[];
+  /** Failed deletions with error details */
+  failed: DeleteResult[];
+  /** Total number of files requested for deletion */
+  totalRequested: number;
+  /** Number of successful deletions */
+  successCount: number;
+  /** Number of failed deletions */
+  failureCount: number;
+}
+
+export interface DeleteMediaSuccessResponse {
+  /** HTTP status code */
+  statusCode: 200;
+  /** Success message */
+  message: string;
+  /** Delete operation results */
+  data: DeleteMediaData;
+}
+
+// ============================================================================
+// Rename Media Types
+// ============================================================================
+
+export interface RenameMediaRequest {
+  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
+  userId: string;
+  /** Original S3 file key */
+  fileKey: string;
+  /** New filename (sanitized) */
+  newFilename: string;
+}
+
+export interface RenameMediaData {
+  /** Original S3 file key */
+  oldKey: string;
+  /** New S3 file key */
+  newKey: string;
+  /** New filename */
+  filename: string;
+  /** Presigned URL for the renamed file */
+  url: string;
+  /** Presigned URL for thumbnail (present for visual media, null for audio) */
+  thumbnailUrl: string | null;
+}
+
+export interface RenameMediaSuccessResponse {
+  /** HTTP status code */
+  statusCode: 200;
+  /** Success message */
+  message: string;
+  /** Rename operation result */
+  data: RenameMediaData;
+}
+
+// ============================================================================
+// Search Media Types
+// ============================================================================
+
+export interface SearchMediaQueryParams {
+  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
+  userId: string;
+  /** Search query string (partial filename to search for) */
+  query: string;
+  /** Filter by media type (visual or audio), omit for both */
+  mediaType?: 'visual' | 'audio';
+  /** Number of items per page (default: 50, max: 1000) */
+  limit?: number;
+  /** Continuation token for pagination */
+  continuationToken?: string;
+}
+
+export interface SearchMediaData {
+  /** Search query that was used */
+  query: string;
+  /** Media type filter applied (if any) */
+  mediaType?: 'visual' | 'audio';
+  /** List of matching media files */
+  files: MediaFileInfo[];
+  /** Number of files returned */
+  count: number;
+  /** Whether more results are available */
+  hasMore: boolean;
+  /** Token for next page */
+  nextToken?: string;
+}
+
+export interface SearchMediaSuccessResponse {
+  /** HTTP status code */
+  statusCode: 200;
+  /** Success message */
+  message: string;
+  /** Search results */
+  data: SearchMediaData;
+}
+
+// ============================================================================
 // Error Code Enum
 // ============================================================================
 
@@ -256,6 +390,8 @@ export enum ErrorCode {
   INVALID_PARTS = 'INVALID_PARTS',
   UNAUTHORIZED = 'UNAUTHORIZED',
   FORBIDDEN = 'FORBIDDEN',
+  NOT_FOUND = 'NOT_FOUND',
+  CONFLICT = 'CONFLICT',
   RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED',
 
   // Server errors (5xx)
@@ -275,6 +411,7 @@ export enum HttpStatus {
   UNAUTHORIZED = 401,
   FORBIDDEN = 403,
   NOT_FOUND = 404,
+  CONFLICT = 409,
   TOO_MANY_REQUESTS = 429,
   INTERNAL_SERVER_ERROR = 500,
   BAD_GATEWAY = 502,

@@ -12,6 +12,8 @@ import {
   HeadObjectCommand,
   ListObjectsV2Command,
   GetObjectCommand,
+  DeleteObjectCommand,
+  CopyObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
@@ -20,7 +22,9 @@ import { logger } from '../utils/logger';
 import { S3ServiceError } from '../errors/AppError';
 import {
   MediaFile,
+  MediaFileWithThumbnail,
   UploadConfiguration,
+  UploadConfigurationWithThumbnail,
   PresignedUrlInfo,
   MultipartUploadInfo,
   UploadPart,
@@ -28,7 +32,11 @@ import {
   S3UploadMetadata,
   MediaFileInfo,
   ListMediaQueryParams,
+  DeleteResult,
+  RenameMediaData,
+  SearchMediaQueryParams,
 } from '../types';
+import { buildRenamedKey } from '../utils/sanitize';
 
 export class S3Service {
   private s3Client: S3Client;
@@ -53,19 +61,19 @@ export class S3Service {
   }
 
   /**
-   * Create multipart upload configurations for multiple files
+   * Create multipart upload configurations for multiple files with optional thumbnails
    */
   async createMultipartUploads(
-    files: MediaFile[],
+    files: MediaFileWithThumbnail[],
     userId: string
-  ): Promise<UploadConfiguration[]> {
+  ): Promise<UploadConfigurationWithThumbnail[]> {
     logger.info('Creating multipart uploads', {
       fileCount: files.length,
       userId,
     });
 
-    const uploadPromises = files.map((file) =>
-      this.createSingleMultipartUpload(file, userId)
+    const uploadPromises = files.map((fileWithThumbnail) =>
+      this.createMultipartUploadWithThumbnail(fileWithThumbnail, userId)
     );
 
     try {
@@ -83,17 +91,63 @@ export class S3Service {
   }
 
   /**
+   * Create multipart upload for a file with optional thumbnail
+   */
+  private async createMultipartUploadWithThumbnail(
+    fileWithThumbnail: MediaFileWithThumbnail,
+    userId: string
+  ): Promise<UploadConfigurationWithThumbnail> {
+    // Generate a single fileId for both main file and thumbnail
+    const fileId = uuidv4();
+
+    logger.debug('Creating upload for file with thumbnail', {
+      fileId,
+      mainFilename: fileWithThumbnail.main.filename,
+      hasThumbnail: !!fileWithThumbnail.thumbnail,
+    });
+
+    // Create upload config for main file
+    const mainUploadConfig = await this.createSingleMultipartUpload(
+      fileWithThumbnail.main,
+      userId,
+      fileId
+    );
+
+    // Create upload config for thumbnail if provided
+    let thumbnailUploadConfig: UploadConfiguration | undefined;
+    if (fileWithThumbnail.thumbnail) {
+      // Prepend "thumbnail/" to the filename for proper S3 structure
+      const thumbnailFile: MediaFile = {
+        ...fileWithThumbnail.thumbnail,
+        filename: `thumbnail/${fileWithThumbnail.thumbnail.filename}`,
+      };
+
+      thumbnailUploadConfig = await this.createSingleMultipartUpload(
+        thumbnailFile,
+        userId,
+        fileId // Use the SAME fileId so they're in the same directory
+      );
+    }
+
+    return {
+      main: mainUploadConfig,
+      thumbnail: thumbnailUploadConfig,
+    };
+  }
+
+  /**
    * Create a multipart upload for a single file
    */
   private async createSingleMultipartUpload(
     file: MediaFile,
-    userId: string
+    userId: string,
+    fileId?: string
   ): Promise<UploadConfiguration> {
-    const fileId = uuidv4();
-    const s3Key = this.generateS3Key(userId, fileId, file.filename, file.fileType);
+    const actualFileId = fileId || uuidv4();
+    const s3Key = this.generateS3Key(userId, actualFileId, file.filename, file.fileType);
 
     logger.debug('Initiating multipart upload', {
-      fileId,
+      fileId: actualFileId,
       s3Key,
       filename: file.filename,
     });
@@ -106,7 +160,7 @@ export class S3Service {
         ContentType: file.fileType,
         Metadata: {
           userId,
-          fileId,
+          fileId: actualFileId,
           originalFilename: file.filename,
           uploadedAt: new Date().toISOString(),
         },
@@ -136,7 +190,7 @@ export class S3Service {
       ).toISOString();
 
       const uploadConfig: UploadConfiguration = {
-        fileId,
+        fileId: actualFileId,
         s3Key,
         bucket: s3Config.bucketName,
         uploadId: createResponse.UploadId,
@@ -147,7 +201,7 @@ export class S3Service {
       };
 
       logger.info('Multipart upload created', {
-        fileId,
+        fileId: actualFileId,
         uploadId: createResponse.UploadId,
         partCount,
       });
@@ -208,7 +262,7 @@ export class S3Service {
   private sanitizeFilename(filename: string): string {
     return filename
       .replace(/\s+/g, '_')
-      .replace(/[^a-zA-Z0-9._-]/g, '')
+      .replace(/[^a-zA-Z0-9._/-]/g, '') // Allow forward slashes for subdirectories
       .toLowerCase();
   }
 
@@ -514,23 +568,40 @@ export class S3Service {
       const response = await this.s3Client.send(command);
 
       // Transform S3 objects to MediaFileInfo with presigned URLs
-      const filePromises = (response.Contents || []).map(async (obj) => {
-        const fileKey = obj.Key || '';
-        const filename = this.extractFilenameFromKey(fileKey);
-        const extractedMediaType = this.extractMediaTypeFromKey(fileKey);
+      // Filter out thumbnail paths - we only want original files
+      const filePromises = (response.Contents || [])
+        .filter((obj) => {
+          const fileKey = obj.Key || '';
+          return !this.isThumbnailPath(fileKey);
+        })
+        .map(async (obj) => {
+          const fileKey = obj.Key || '';
+          const filename = this.extractFilenameFromKey(fileKey);
+          const extractedMediaType = this.extractMediaTypeFromKey(fileKey);
 
-        // Generate presigned GET URL for the file
-        const url = await this.generatePresignedGetUrl(fileKey);
+          // Generate presigned GET URL for the file
+          const url = await this.generatePresignedGetUrl(fileKey);
 
-        return {
-          fileKey,
-          filename,
-          mediaType: extractedMediaType,
-          size: obj.Size || 0,
-          uploadedAt: obj.LastModified?.toISOString() || new Date().toISOString(),
-          url,
-        };
-      });
+          // Generate thumbnail URL for visual media (only if thumbnail exists)
+          let thumbnailUrl: string | null = null;
+          if (this.requiresThumbnail(extractedMediaType)) {
+            const thumbnailKey = this.getThumbnailKey(fileKey);
+            const thumbnailExists = await this.checkFileExists(thumbnailKey);
+            if (thumbnailExists) {
+              thumbnailUrl = await this.generatePresignedGetUrl(thumbnailKey);
+            }
+          }
+
+          return {
+            fileKey,
+            filename,
+            mediaType: extractedMediaType,
+            size: obj.Size || 0,
+            uploadedAt: obj.LastModified?.toISOString() || new Date().toISOString(),
+            url,
+            thumbnailUrl,
+          };
+        });
 
       const files = await Promise.all(filePromises);
 
@@ -576,6 +647,408 @@ export class S3Service {
       }
     }
     return 'visual'; // Default to visual
+  }
+
+  /**
+   * Generate thumbnail S3 key from original file key
+   * Original: uploads/user123/visual/2025/11/18/abc-123/video.mp4
+   * Thumbnail: uploads/user123/visual/2025/11/18/abc-123/thumbnail/video.jpg
+   */
+  private getThumbnailKey(originalKey: string): string {
+    const lastSlash = originalKey.lastIndexOf('/');
+    const directory = originalKey.substring(0, lastSlash);
+    const filename = originalKey.substring(lastSlash + 1);
+
+    // Remove file extension and add .jpg
+    const lastDot = filename.lastIndexOf('.');
+    const nameWithoutExt = lastDot > 0 ? filename.substring(0, lastDot) : filename;
+
+    return `${directory}/thumbnail/${nameWithoutExt}.jpg`;
+  }
+
+  /**
+   * Check if S3 key is a thumbnail path
+   */
+  private isThumbnailPath(key: string): boolean {
+    return key.includes('/thumbnail/');
+  }
+
+  /**
+   * Check if media type requires a thumbnail
+   * Visual media (videos and images) require thumbnails
+   * Audio media does not require thumbnails
+   */
+  private requiresThumbnail(mediaType: 'visual' | 'audio'): boolean {
+    return mediaType === 'visual';
+  }
+
+  /**
+   * Delete multiple media files from S3
+   * Returns results for each file (success or failure)
+   */
+  async deleteMediaFiles(fileKeys: string[]): Promise<DeleteResult[]> {
+    logger.info('Deleting media files', { fileCount: fileKeys.length });
+
+    // Process deletions in parallel for performance
+    const deletePromises = fileKeys.map((fileKey) => this.deleteSingleFile(fileKey));
+
+    const results = await Promise.allSettled(deletePromises);
+
+    // Transform results into DeleteResult format
+    const deleteResults: DeleteResult[] = results.map((result, index) => {
+      const fileKey = fileKeys[index];
+
+      if (result.status === 'fulfilled') {
+        return {
+          fileKey,
+          success: true,
+        };
+      } else {
+        return {
+          fileKey,
+          success: false,
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        };
+      }
+    });
+
+    const successCount = deleteResults.filter((r) => r.success).length;
+    const failureCount = deleteResults.filter((r) => !r.success).length;
+
+    logger.info('Media files deletion completed', {
+      total: fileKeys.length,
+      success: successCount,
+      failed: failureCount,
+    });
+
+    return deleteResults;
+  }
+
+  /**
+   * Delete a single file from S3 (and its thumbnail if it's visual media)
+   */
+  private async deleteSingleFile(fileKey: string): Promise<void> {
+    logger.debug('Deleting file from S3', { fileKey });
+
+    try {
+      // Extract media type to determine if thumbnail exists
+      const mediaType = this.extractMediaTypeFromKey(fileKey);
+
+      // Delete the original file
+      const deleteOriginalCommand = new DeleteObjectCommand({
+        Bucket: s3Config.bucketName,
+        Key: fileKey,
+      });
+      await this.s3Client.send(deleteOriginalCommand);
+
+      // If visual media, also delete thumbnail (CRITICAL operation)
+      if (this.requiresThumbnail(mediaType)) {
+        const thumbnailKey = this.getThumbnailKey(fileKey);
+        logger.debug('Deleting thumbnail', { thumbnailKey });
+
+        const deleteThumbnailCommand = new DeleteObjectCommand({
+          Bucket: s3Config.bucketName,
+          Key: thumbnailKey,
+        });
+        await this.s3Client.send(deleteThumbnailCommand);
+      }
+
+      logger.debug('File deleted successfully', { fileKey });
+    } catch (error) {
+      logger.error('Failed to delete file from S3', error, { fileKey });
+      throw new S3ServiceError('Failed to delete file from S3', {
+        error: error instanceof Error ? error.message : String(error),
+        fileKey,
+      });
+    }
+  }
+
+  /**
+   * Rename a media file in S3 by copying to new key and deleting old key
+   * Also renames thumbnails for visual media
+   */
+  async renameMediaFile(oldKey: string, newFilename: string): Promise<RenameMediaData> {
+    logger.info('Renaming media file', { oldKey, newFilename });
+
+    // Build new S3 key with updated filename
+    const newKey = buildRenamedKey(oldKey, newFilename);
+    const mediaType = this.extractMediaTypeFromKey(oldKey);
+
+    logger.debug('Renaming file', { oldKey, newKey, mediaType });
+
+    try {
+      // Check if file with new name already exists
+      const exists = await this.checkFileExists(newKey);
+      if (exists) {
+        throw new S3ServiceError('File with this name already exists', {
+          fileKey: newKey,
+        });
+      }
+
+      // Check if source file exists
+      const sourceExists = await this.checkFileExists(oldKey);
+      if (!sourceExists) {
+        throw new S3ServiceError('Source file not found', {
+          fileKey: oldKey,
+        });
+      }
+
+      // Get metadata from source file
+      const metadata = await this.getObjectMetadata(oldKey);
+
+      // Copy original file to new key, preserving metadata
+      const copyCommand = new CopyObjectCommand({
+        Bucket: s3Config.bucketName,
+        CopySource: `${s3Config.bucketName}/${oldKey}`,
+        Key: newKey,
+        ContentType: metadata.fileType,
+        Metadata: {
+          userId: metadata.userId,
+          fileId: metadata.fileId,
+          originalFilename: newFilename,
+          uploadedAt: metadata.uploadedAt,
+        },
+        MetadataDirective: 'REPLACE', // Use REPLACE to update metadata with new filename
+        ServerSideEncryption: 'AES256',
+      });
+
+      await this.s3Client.send(copyCommand);
+      logger.debug('File copied successfully', { oldKey, newKey });
+
+      // If visual media, also copy the thumbnail (CRITICAL operation)
+      if (this.requiresThumbnail(mediaType)) {
+        const oldThumbnailKey = this.getThumbnailKey(oldKey);
+        const newThumbnailKey = this.getThumbnailKey(newKey);
+
+        logger.debug('Copying thumbnail', { oldThumbnailKey, newThumbnailKey });
+
+        const copyThumbnailCommand = new CopyObjectCommand({
+          Bucket: s3Config.bucketName,
+          CopySource: `${s3Config.bucketName}/${oldThumbnailKey}`,
+          Key: newThumbnailKey,
+          ContentType: 'image/jpeg',
+          ServerSideEncryption: 'AES256',
+        });
+
+        await this.s3Client.send(copyThumbnailCommand);
+        logger.debug('Thumbnail copied successfully', { oldThumbnailKey, newThumbnailKey });
+      }
+
+      // Delete old file only after successful copy (this will also delete thumbnail for visual media)
+      await this.deleteSingleFile(oldKey);
+
+      logger.info('File renamed successfully', { oldKey, newKey });
+
+      // Generate presigned URL for the renamed file
+      const url = await this.generatePresignedGetUrl(newKey);
+
+      // Generate thumbnail URL for visual media (only if thumbnail exists)
+      let thumbnailUrl: string | null = null;
+      if (this.requiresThumbnail(mediaType)) {
+        const newThumbnailKey = this.getThumbnailKey(newKey);
+        const thumbnailExists = await this.checkFileExists(newThumbnailKey);
+        if (thumbnailExists) {
+          thumbnailUrl = await this.generatePresignedGetUrl(newThumbnailKey);
+        }
+      }
+
+      return {
+        oldKey,
+        newKey,
+        filename: newFilename,
+        url,
+        thumbnailUrl,
+      };
+    } catch (error) {
+      logger.error('Failed to rename file', error, { oldKey, newKey });
+
+      // If error is already S3ServiceError, rethrow it
+      if (error instanceof S3ServiceError) {
+        throw error;
+      }
+
+      throw new S3ServiceError('Failed to rename file in S3', {
+        error: error instanceof Error ? error.message : String(error),
+        oldKey,
+        newKey,
+      });
+    }
+  }
+
+  /**
+   * Check if a file exists in S3
+   */
+  private async checkFileExists(s3Key: string): Promise<boolean> {
+    try {
+      const command = new HeadObjectCommand({
+        Bucket: s3Config.bucketName,
+        Key: s3Key,
+      });
+
+      await this.s3Client.send(command);
+      return true;
+    } catch (error: any) {
+      // If error code is NotFound, file doesn't exist
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+        return false;
+      }
+      // For other errors, throw them
+      throw error;
+    }
+  }
+
+  /**
+   * Search media files by partial filename match
+   * Supports searching across all media types or filtering by visual/audio
+   */
+  async searchMediaFiles(params: SearchMediaQueryParams): Promise<{
+    files: MediaFileInfo[];
+    hasMore: boolean;
+    nextToken?: string;
+  }> {
+    const { userId, query, mediaType, limit = 50, continuationToken } = params;
+
+    // Normalize search query to lowercase for case-insensitive matching
+    const searchQuery = query.trim().toLowerCase();
+
+    logger.info('Searching media files', {
+      userId,
+      query: searchQuery,
+      mediaType,
+      limit,
+    });
+
+    try {
+      let allFiles: MediaFileInfo[] = [];
+
+      if (mediaType) {
+        // Search only in specific media type
+        const prefix = `${s3Config.keyPrefix}/${userId}/${mediaType}/`;
+        const files = await this.listAndFilterFiles(prefix, searchQuery, continuationToken);
+        allFiles = files;
+      } else {
+        // Search in both visual and audio
+        const visualPrefix = `${s3Config.keyPrefix}/${userId}/visual/`;
+        const audioPrefix = `${s3Config.keyPrefix}/${userId}/audio/`;
+
+        // List from both prefixes
+        const [visualFiles, audioFiles] = await Promise.all([
+          this.listAndFilterFiles(visualPrefix, searchQuery),
+          this.listAndFilterFiles(audioPrefix, searchQuery),
+        ]);
+
+        // Combine results
+        allFiles = [...visualFiles, ...audioFiles];
+
+        // Sort by upload date (most recent first)
+        allFiles.sort((a, b) => {
+          const dateA = new Date(a.uploadedAt).getTime();
+          const dateB = new Date(b.uploadedAt).getTime();
+          return dateB - dateA;
+        });
+      }
+
+      // Apply limit and pagination
+      const hasMore = allFiles.length > limit;
+      const paginatedFiles = allFiles.slice(0, limit);
+
+      logger.info('Media search completed', {
+        query: searchQuery,
+        totalMatches: allFiles.length,
+        returned: paginatedFiles.length,
+        hasMore,
+      });
+
+      return {
+        files: paginatedFiles,
+        hasMore,
+        nextToken: hasMore ? 'has-more' : undefined, // Simplified pagination for MVP
+      };
+    } catch (error) {
+      logger.error('Failed to search media files', error, { userId, query: searchQuery });
+      throw new S3ServiceError('Failed to search media files from S3', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
+        query: searchQuery,
+      });
+    }
+  }
+
+  /**
+   * List files from S3 with a prefix and filter by search query
+   */
+  private async listAndFilterFiles(
+    prefix: string,
+    searchQuery: string,
+    continuationToken?: string
+  ): Promise<MediaFileInfo[]> {
+    const matchingFiles: MediaFileInfo[] = [];
+
+    try {
+      // List up to 1000 objects (S3 max per request)
+      const command = new ListObjectsV2Command({
+        Bucket: s3Config.bucketName,
+        Prefix: prefix,
+        MaxKeys: 1000,
+        ContinuationToken: continuationToken,
+      });
+
+      const response = await this.s3Client.send(command);
+
+      // Filter and transform matching files
+      const filePromises = (response.Contents || [])
+        .filter((obj) => {
+          const fileKey = obj.Key || '';
+          // Filter out thumbnail paths
+          if (this.isThumbnailPath(fileKey)) {
+            return false;
+          }
+          const filename = this.extractFilenameFromKey(fileKey).toLowerCase();
+          return filename.includes(searchQuery);
+        })
+        .map(async (obj) => {
+          const fileKey = obj.Key || '';
+          const filename = this.extractFilenameFromKey(fileKey);
+          const extractedMediaType = this.extractMediaTypeFromKey(fileKey);
+
+          // Generate presigned GET URL for the file
+          const url = await this.generatePresignedGetUrl(fileKey);
+
+          // Generate thumbnail URL for visual media (only if thumbnail exists)
+          let thumbnailUrl: string | null = null;
+          if (this.requiresThumbnail(extractedMediaType)) {
+            const thumbnailKey = this.getThumbnailKey(fileKey);
+            const thumbnailExists = await this.checkFileExists(thumbnailKey);
+            if (thumbnailExists) {
+              thumbnailUrl = await this.generatePresignedGetUrl(thumbnailKey);
+            }
+          }
+
+          return {
+            fileKey,
+            filename,
+            mediaType: extractedMediaType,
+            size: obj.Size || 0,
+            uploadedAt: obj.LastModified?.toISOString() || new Date().toISOString(),
+            url,
+            thumbnailUrl,
+          };
+        });
+
+      const files = await Promise.all(filePromises);
+      matchingFiles.push(...files);
+
+      logger.debug('Files listed and filtered', {
+        prefix,
+        totalListed: response.Contents?.length || 0,
+        matchingFiles: matchingFiles.length,
+      });
+    } catch (error) {
+      logger.error('Failed to list and filter files', error, { prefix, searchQuery });
+      throw error;
+    }
+
+    return matchingFiles;
   }
 
   /**

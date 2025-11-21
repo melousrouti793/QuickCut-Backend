@@ -7,6 +7,9 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { handler as initiateHandler } from './upload.handler';
 import { handler as completeHandler } from './complete.handler';
 import { handler as listMediaHandler } from './list-media.handler';
+import { handler as deleteMediaHandler } from './delete-media.handler';
+import { handler as renameMediaHandler } from './rename-media.handler';
+import { handler as searchMediaHandler } from './search-media.handler';
 import { logger } from '../utils/logger';
 
 /**
@@ -47,11 +50,29 @@ export async function handler(
       return await completeHandler(event);
 
     case '/media':
+      if (method === 'GET') {
+        logger.debug('Routing to list media handler');
+        return await listMediaHandler(event);
+      } else if (method === 'DELETE') {
+        logger.debug('Routing to delete media handler');
+        return await deleteMediaHandler(event);
+      } else {
+        return methodNotAllowedResponse(['GET', 'DELETE'], method);
+      }
+
+    case '/media/rename':
+      if (method !== 'PATCH') {
+        return methodNotAllowedResponse(['PATCH'], method);
+      }
+      logger.debug('Routing to rename media handler');
+      return await renameMediaHandler(event);
+
+    case '/media/search':
       if (method !== 'GET') {
         return methodNotAllowedResponse(['GET'], method);
       }
-      logger.debug('Routing to list media handler');
-      return await listMediaHandler(event);
+      logger.debug('Routing to search media handler');
+      return await searchMediaHandler(event);
 
     default:
       logger.warn('Route not found', { path });
@@ -68,7 +89,13 @@ export async function handler(
           message: 'Not Found',
           details: {
             path,
-            availableRoutes: ['/upload/initiate', '/upload/complete', '/media'],
+            availableRoutes: [
+              '/upload/initiate',
+              '/upload/complete',
+              '/media',
+              '/media/rename',
+              '/media/search',
+            ],
           },
         }),
       };

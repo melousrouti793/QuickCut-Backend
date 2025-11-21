@@ -3,11 +3,27 @@
  * Handles all input validation logic
  */
 
-import { MediaFile, ValidationResult, CompleteUploadRequest, UploadPart } from '../types';
+import {
+  MediaFile,
+  MediaFileWithThumbnail,
+  ValidationResult,
+  CompleteUploadRequest,
+  UploadPart,
+  DeleteMediaRequest,
+  RenameMediaRequest,
+} from '../types';
 import { ErrorCode } from '../types';
 import { ValidationError } from '../errors/AppError';
 import { validationConfig } from '../config';
 import { logger } from '../utils/logger';
+import {
+  sanitizeFilename,
+  sanitizeUserId,
+  validateFileKey,
+  authorizeFileAccess,
+  extractFilenameFromKey,
+  validateExtensionMatch,
+} from '../utils/sanitize';
 
 export class ValidationService {
   /**
@@ -55,7 +71,82 @@ export class ValidationService {
   }
 
   /**
-   * Validate an array of media files
+   * Validate an array of media files with optional thumbnails
+   */
+  validateFilesWithThumbnails(files: MediaFileWithThumbnail[]): ValidationResult {
+    const errors: string[] = [];
+
+    // Check if files array exists and is not empty
+    if (!files || !Array.isArray(files)) {
+      throw new ValidationError(
+        'Files must be a non-empty array',
+        ErrorCode.MISSING_REQUIRED_FIELD,
+        { field: 'files' }
+      );
+    }
+
+    if (files.length === 0) {
+      throw new ValidationError(
+        'At least one file is required',
+        ErrorCode.INVALID_REQUEST,
+        { field: 'files' }
+      );
+    }
+
+    // Check file count limit
+    if (files.length > validationConfig.maxFilesPerRequest) {
+      throw new ValidationError(
+        `Maximum ${validationConfig.maxFilesPerRequest} files allowed per request`,
+        ErrorCode.TOO_MANY_FILES,
+        {
+          maxFiles: validationConfig.maxFilesPerRequest,
+          receivedFiles: files.length,
+        }
+      );
+    }
+
+    // Validate each file with thumbnail
+    files.forEach((fileWithThumbnail, index) => {
+      // Validate main file
+      if (!fileWithThumbnail.main) {
+        errors.push(`File at index ${index}: main file is required`);
+        return;
+      }
+
+      const mainFileErrors = this.validateSingleFile(fileWithThumbnail.main, index);
+      errors.push(...mainFileErrors.map(err => err.replace('File at', 'Main file at')));
+
+      // Validate thumbnail if provided
+      if (fileWithThumbnail.thumbnail) {
+        const thumbnailErrors = this.validateSingleFile(fileWithThumbnail.thumbnail, index);
+        errors.push(...thumbnailErrors.map(err => err.replace('File at', 'Thumbnail at')));
+
+        // Verify thumbnail is an image
+        if (fileWithThumbnail.thumbnail.fileType &&
+            !fileWithThumbnail.thumbnail.fileType.startsWith('image/')) {
+          errors.push(`Thumbnail at index ${index}: must be an image file (got ${fileWithThumbnail.thumbnail.fileType})`);
+        }
+      }
+    });
+
+    if (errors.length > 0) {
+      throw new ValidationError(
+        'File validation failed',
+        ErrorCode.INVALID_REQUEST,
+        { validationErrors: errors }
+      );
+    }
+
+    logger.info('File validation successful', { fileCount: files.length });
+
+    return {
+      isValid: true,
+      errors: [],
+    };
+  }
+
+  /**
+   * Validate an array of media files (legacy method for backwards compatibility)
    */
   validateFiles(files: MediaFile[]): ValidationResult {
     const errors: string[] = [];
@@ -170,10 +261,28 @@ export class ValidationService {
       );
     }
 
-    // Check for path traversal attempts
-    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    // Check for actual path traversal patterns
+    // Allow forward slashes for subdirectories (e.g., thumbnail/video.jpg)
+    // Allow multiple dots in filenames (e.g., file...mp3)
+    // Block backslashes and path traversal patterns
+    const pathTraversalPatterns = [
+      '../',    // Unix path traversal
+      '..\\',   // Windows path traversal
+      '..%2F',  // URL-encoded forward slash (uppercase)
+      '..%2f',  // URL-encoded forward slash (lowercase)
+      '..%5C',  // URL-encoded backslash (uppercase)
+      '..%5c',  // URL-encoded backslash (lowercase)
+    ];
+
+    const hasPathTraversal = pathTraversalPatterns.some(pattern =>
+      filename.includes(pattern)
+    );
+
+    // Block path traversal patterns and backslashes
+    // Allow forward slashes for legitimate subdirectory paths
+    if (hasPathTraversal || filename.includes('\\')) {
       errors.push(
-        `File at index ${index}: filename cannot contain path separators or traversal patterns`
+        `File at index ${index}: filename cannot contain path traversal patterns (../ or ..\\) or backslashes`
       );
     }
 
@@ -233,14 +342,14 @@ export class ValidationService {
    * Sanitize filename to make it safe for S3
    */
   sanitizeFilename(filename: string): string {
-    // Remove any path components
-    const basename = filename.split(/[/\\]/).pop() || filename;
+    // Remove backslashes only (allow forward slashes for subdirectories like thumbnail/video.jpg)
+    const withoutBackslashes = filename.replace(/\\/g, '');
 
     // Replace spaces with underscores
-    // Remove any characters that aren't alphanumeric, dash, underscore, or period
-    const sanitized = basename
+    // Remove any characters that aren't alphanumeric, dash, underscore, period, or forward slash
+    const sanitized = withoutBackslashes
       .replace(/\s+/g, '_')
-      .replace(/[^a-zA-Z0-9._-]/g, '');
+      .replace(/[^a-zA-Z0-9._/-]/g, '');
 
     return sanitized;
   }
@@ -445,6 +554,192 @@ export class ValidationService {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
 
     return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+  }
+
+  /**
+   * Validate delete media request
+   */
+  validateDeleteMediaRequest(request: DeleteMediaRequest): void {
+    const errors: string[] = [];
+
+    // Validate userId
+    try {
+      sanitizeUserId(request.userId);
+    } catch (error) {
+      if (error instanceof Error) {
+        errors.push(error.message);
+      }
+    }
+
+    // Validate fileKeys array
+    if (!request.fileKeys || !Array.isArray(request.fileKeys)) {
+      errors.push('fileKeys must be a non-empty array');
+    } else {
+      if (request.fileKeys.length === 0) {
+        errors.push('fileKeys array cannot be empty');
+      }
+
+      if (request.fileKeys.length > 100) {
+        errors.push('Cannot delete more than 100 files at once');
+      }
+
+      // Validate each file key
+      request.fileKeys.forEach((fileKey, index) => {
+        try {
+          validateFileKey(fileKey);
+        } catch (error) {
+          if (error instanceof Error) {
+            errors.push(`File key at index ${index}: ${error.message}`);
+          }
+        }
+
+        // Validate authorization
+        if (!authorizeFileAccess(fileKey, request.userId)) {
+          errors.push(
+            `File key at index ${index}: You can only delete your own files`
+          );
+        }
+      });
+    }
+
+    if (errors.length > 0) {
+      throw new ValidationError(
+        'Delete media validation failed',
+        ErrorCode.INVALID_REQUEST,
+        { validationErrors: errors }
+      );
+    }
+
+    logger.debug('Delete media request validation successful');
+  }
+
+  /**
+   * Validate rename media request
+   */
+  validateRenameMediaRequest(request: RenameMediaRequest): void {
+    const errors: string[] = [];
+
+    // Validate userId
+    try {
+      sanitizeUserId(request.userId);
+    } catch (error) {
+      if (error instanceof Error) {
+        errors.push(error.message);
+      }
+    }
+
+    // Validate fileKey
+    try {
+      validateFileKey(request.fileKey);
+    } catch (error) {
+      if (error instanceof Error) {
+        errors.push(`File key: ${error.message}`);
+      }
+    }
+
+    // Validate authorization
+    if (!authorizeFileAccess(request.fileKey, request.userId)) {
+      errors.push('You can only rename your own files');
+    }
+
+    // Validate and sanitize new filename
+    try {
+      sanitizeFilename(request.newFilename);
+    } catch (error) {
+      if (error instanceof Error) {
+        errors.push(`New filename: ${error.message}`);
+      }
+    }
+
+    // Validate extension match
+    try {
+      const oldFilename = extractFilenameFromKey(request.fileKey);
+      validateExtensionMatch(oldFilename, request.newFilename);
+    } catch (error) {
+      if (error instanceof Error) {
+        errors.push(error.message);
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new ValidationError(
+        'Rename media validation failed',
+        ErrorCode.INVALID_REQUEST,
+        { validationErrors: errors }
+      );
+    }
+
+    logger.debug('Rename media request validation successful');
+  }
+
+  /**
+   * Validate search media query parameters
+   */
+  validateSearchMediaQueryParams(params: {
+    userId?: string;
+    query?: string;
+    mediaType?: string;
+    limit?: string;
+    continuationToken?: string;
+  }): void {
+    const errors: string[] = [];
+
+    // Validate userId (required)
+    if (!params.userId || typeof params.userId !== 'string') {
+      errors.push('userId is required');
+    } else {
+      try {
+        sanitizeUserId(params.userId);
+      } catch (error) {
+        if (error instanceof Error) {
+          errors.push(error.message);
+        }
+      }
+    }
+
+    // Validate query (required)
+    if (!params.query || typeof params.query !== 'string') {
+      errors.push('query is required');
+    } else {
+      const trimmedQuery = params.query.trim();
+
+      if (trimmedQuery.length === 0) {
+        errors.push('Search query cannot be empty');
+      }
+
+      if (trimmedQuery.length > 255) {
+        errors.push('Search query exceeds maximum length of 255 characters');
+      }
+    }
+
+    // Validate mediaType (optional)
+    if (params.mediaType) {
+      if (params.mediaType !== 'visual' && params.mediaType !== 'audio') {
+        errors.push('mediaType must be either "visual" or "audio"');
+      }
+    }
+
+    // Validate limit (optional)
+    if (params.limit) {
+      const limitNum = parseInt(params.limit, 10);
+      if (isNaN(limitNum)) {
+        errors.push('limit must be a valid number');
+      } else if (limitNum < 1 || limitNum > 1000) {
+        errors.push('limit must be between 1 and 1000');
+      }
+    }
+
+    // continuationToken is just a string, no specific validation needed
+
+    if (errors.length > 0) {
+      throw new ValidationError(
+        'Search media validation failed',
+        ErrorCode.INVALID_REQUEST,
+        { validationErrors: errors }
+      );
+    }
+
+    logger.debug('Search media query params validation successful');
   }
 }
 
