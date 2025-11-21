@@ -16,6 +16,7 @@ import { validationService } from '../services/validation.service';
 import { s3Service } from '../services/s3.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
+import { getAuthenticatedUserId } from '../utils/auth';
 
 /**
  * Lambda handler for complete upload requests
@@ -37,14 +38,12 @@ export async function handler(
     // Validate configuration on cold start
     validateConfig();
 
+    // Extract authenticated userId from authorizer context
+    const userId = getAuthenticatedUserId(event);
+    logger.setContext({ userId });
+
     // Parse request body
     const request = parseRequestBody(event);
-
-    // TODO: Replace with API Gateway authorizer for production
-    // For MVP, userId is passed in request body for testing
-    // Validate userId from request body
-    validationService.validateUserId(request.userId);
-    logger.setContext({ userId: request.userId });
 
     // Validate completion request
     validationService.validateCompleteUploadRequest(request);
@@ -67,7 +66,7 @@ export async function handler(
     logger.info('Complete upload request completed successfully', {
       fileId: request.fileId,
       s3Key: request.s3Key,
-      userId: request.userId,
+      userId,
     });
 
     return buildApiResponse(response);
@@ -95,14 +94,6 @@ function parseRequestBody(event: APIGatewayProxyEventV2): CompleteUploadRequest 
     const body = JSON.parse(event.body);
 
     // Validate required fields exist
-    if (!body.userId || typeof body.userId !== 'string') {
-      throw new AppError(
-        HttpStatus.BAD_REQUEST,
-        'INVALID_REQUEST' as any,
-        'Request must contain a "userId" field'
-      );
-    }
-
     if (!body.fileId || !body.s3Key || !body.uploadId || !body.parts) {
       throw new AppError(
         HttpStatus.BAD_REQUEST,

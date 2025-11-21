@@ -23,8 +23,6 @@ export interface MediaFileWithThumbnail {
 }
 
 export interface UploadRequest {
-  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
-  userId: string;
   /** Array of media files to upload (with optional thumbnails) */
   files: MediaFileWithThumbnail[];
 }
@@ -37,8 +35,6 @@ export interface UploadPart {
 }
 
 export interface CompleteUploadRequest {
-  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
-  userId: string;
   /** File ID from initiate response */
   fileId: string;
   /** S3 key from initiate response */
@@ -50,7 +46,7 @@ export interface CompleteUploadRequest {
 }
 
 export interface ListMediaQueryParams {
-  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
+  /** User ID from authorizer context */
   userId: string;
   /** Filter by media type (visual or audio) */
   mediaType?: 'visual' | 'audio';
@@ -259,7 +255,7 @@ export interface ValidationResult {
 // ============================================================================
 
 export interface DeleteMediaRequest {
-  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
+  /** User ID from authorizer context (used for authorization checks) */
   userId: string;
   /** Array of S3 file keys to delete */
   fileKeys: string[];
@@ -301,7 +297,7 @@ export interface DeleteMediaSuccessResponse {
 // ============================================================================
 
 export interface RenameMediaRequest {
-  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
+  /** User ID from authorizer context (used for authorization checks) */
   userId: string;
   /** Original S3 file key */
   fileKey: string;
@@ -336,7 +332,7 @@ export interface RenameMediaSuccessResponse {
 // ============================================================================
 
 export interface SearchMediaQueryParams {
-  /** User ID (temporary - will be replaced with API Gateway authorizer in production) */
+  /** User ID from authorizer context */
   userId: string;
   /** Search query string (partial filename to search for) */
   query: string;

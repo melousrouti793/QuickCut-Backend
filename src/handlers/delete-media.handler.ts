@@ -9,13 +9,13 @@ import {
   DeleteMediaSuccessResponse,
   ErrorResponse,
   HttpStatus,
-  DeleteMediaRequest,
 } from '../types';
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
 import { s3Service } from '../services/s3.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
+import { getAuthenticatedUserId } from '../utils/auth';
 
 /**
  * Lambda handler for delete media requests
@@ -37,18 +37,18 @@ export async function handler(
     // Validate configuration on cold start
     validateConfig();
 
+    // Extract authenticated userId from authorizer context
+    const userId = getAuthenticatedUserId(event);
+    logger.setContext({ userId });
+
     // Parse request body
     const request = parseRequestBody(event);
 
-    // Validate request
-    validationService.validateDeleteMediaRequest(request);
-
-    // Validate userId
-    validationService.validateUserId(request.userId);
-    logger.setContext({ userId: request.userId });
+    // Validate request (with authenticated userId for authorization checks)
+    validationService.validateDeleteMediaRequest({ ...request, userId });
 
     logger.info('Deleting media files', {
-      userId: request.userId,
+      userId,
       fileCount: request.fileKeys.length,
     });
 
@@ -76,7 +76,7 @@ export async function handler(
       totalRequested: request.fileKeys.length,
       successCount: deleted.length,
       failureCount: failed.length,
-      userId: request.userId,
+      userId,
     });
 
     return buildApiResponse(response);
@@ -91,7 +91,7 @@ export async function handler(
 /**
  * Parse request body from event
  */
-function parseRequestBody(event: APIGatewayProxyEventV2): DeleteMediaRequest {
+function parseRequestBody(event: APIGatewayProxyEventV2): { fileKeys: string[] } {
   if (!event.body) {
     throw new AppError(
       HttpStatus.BAD_REQUEST,
@@ -103,14 +103,6 @@ function parseRequestBody(event: APIGatewayProxyEventV2): DeleteMediaRequest {
   try {
     const body = JSON.parse(event.body);
 
-    if (!body.userId || typeof body.userId !== 'string') {
-      throw new AppError(
-        HttpStatus.BAD_REQUEST,
-        'INVALID_REQUEST' as any,
-        'Request must contain a "userId" field'
-      );
-    }
-
     if (!body.fileKeys || !Array.isArray(body.fileKeys)) {
       throw new AppError(
         HttpStatus.BAD_REQUEST,
@@ -120,7 +112,6 @@ function parseRequestBody(event: APIGatewayProxyEventV2): DeleteMediaRequest {
     }
 
     return {
-      userId: body.userId,
       fileKeys: body.fileKeys,
     };
   } catch (error) {

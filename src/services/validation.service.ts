@@ -27,8 +27,8 @@ import {
 
 export class ValidationService {
   /**
-   * Validate userId field
-   * TODO: Replace with API Gateway authorizer for production
+   * Validate userId field format
+   * Note: userId comes from API Gateway authorizer context, not from client requests
    */
   validateUserId(userId: string): void {
     if (!userId || typeof userId !== 'string') {
@@ -493,25 +493,11 @@ export class ValidationService {
    * Validate list media query parameters
    */
   validateListMediaQueryParams(params: {
-    userId?: string;
     mediaType?: string;
     limit?: string;
     continuationToken?: string;
   }): void {
     const errors: string[] = [];
-
-    // Validate userId (required)
-    if (!params.userId || typeof params.userId !== 'string') {
-      errors.push('userId is required');
-    } else {
-      try {
-        this.validateUserId(params.userId);
-      } catch (error) {
-        if (error instanceof ValidationError) {
-          errors.push(error.message);
-        }
-      }
-    }
 
     // Validate mediaType (optional)
     if (params.mediaType) {
@@ -676,26 +662,12 @@ export class ValidationService {
    * Validate search media query parameters
    */
   validateSearchMediaQueryParams(params: {
-    userId?: string;
     query?: string;
     mediaType?: string;
     limit?: string;
     continuationToken?: string;
   }): void {
     const errors: string[] = [];
-
-    // Validate userId (required)
-    if (!params.userId || typeof params.userId !== 'string') {
-      errors.push('userId is required');
-    } else {
-      try {
-        sanitizeUserId(params.userId);
-      } catch (error) {
-        if (error instanceof Error) {
-          errors.push(error.message);
-        }
-      }
-    }
 
     // Validate query (required)
     if (!params.query || typeof params.query !== 'string') {

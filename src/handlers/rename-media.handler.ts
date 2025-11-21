@@ -9,7 +9,6 @@ import {
   RenameMediaSuccessResponse,
   ErrorResponse,
   HttpStatus,
-  RenameMediaRequest,
   ErrorCode,
 } from '../types';
 import { AppError, S3ServiceError } from '../errors/AppError';
@@ -18,6 +17,7 @@ import { s3Service } from '../services/s3.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
 import { sanitizeFilename } from '../utils/sanitize';
+import { getAuthenticatedUserId } from '../utils/auth';
 
 /**
  * Lambda handler for rename media requests
@@ -39,21 +39,21 @@ export async function handler(
     // Validate configuration on cold start
     validateConfig();
 
+    // Extract authenticated userId from authorizer context
+    const userId = getAuthenticatedUserId(event);
+    logger.setContext({ userId });
+
     // Parse request body
     const request = parseRequestBody(event);
 
-    // Validate request
-    validationService.validateRenameMediaRequest(request);
-
-    // Validate userId
-    validationService.validateUserId(request.userId);
-    logger.setContext({ userId: request.userId });
+    // Validate request (with authenticated userId for authorization checks)
+    validationService.validateRenameMediaRequest({ ...request, userId });
 
     // Sanitize new filename (validation already checked it's valid)
     const sanitizedFilename = sanitizeFilename(request.newFilename);
 
     logger.info('Renaming media file', {
-      userId: request.userId,
+      userId,
       fileKey: request.fileKey,
       newFilename: sanitizedFilename,
     });
@@ -71,7 +71,7 @@ export async function handler(
     logger.info('Rename media request completed successfully', {
       oldKey: result.oldKey,
       newKey: result.newKey,
-      userId: request.userId,
+      userId,
     });
 
     return buildApiResponse(response);
@@ -86,7 +86,7 @@ export async function handler(
 /**
  * Parse request body from event
  */
-function parseRequestBody(event: APIGatewayProxyEventV2): RenameMediaRequest {
+function parseRequestBody(event: APIGatewayProxyEventV2): { fileKey: string; newFilename: string } {
   if (!event.body) {
     throw new AppError(
       HttpStatus.BAD_REQUEST,
@@ -97,14 +97,6 @@ function parseRequestBody(event: APIGatewayProxyEventV2): RenameMediaRequest {
 
   try {
     const body = JSON.parse(event.body);
-
-    if (!body.userId || typeof body.userId !== 'string') {
-      throw new AppError(
-        HttpStatus.BAD_REQUEST,
-        'INVALID_REQUEST' as any,
-        'Request must contain a "userId" field'
-      );
-    }
 
     if (!body.fileKey || typeof body.fileKey !== 'string') {
       throw new AppError(
@@ -123,7 +115,6 @@ function parseRequestBody(event: APIGatewayProxyEventV2): RenameMediaRequest {
     }
 
     return {
-      userId: body.userId,
       fileKey: body.fileKey,
       newFilename: body.newFilename,
     };

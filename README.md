@@ -57,12 +57,23 @@ src/
 │   └── AppError.ts             # Custom error classes
 │
 ├── utils/
+│   ├── auth.ts                 # Authentication & authorizer context extraction
 │   ├── logger.ts               # Structured logging
 │   └── sanitize.ts             # Input sanitization utilities
 │
 └── config/
     └── index.ts                # Environment configuration
 ```
+
+## Authentication
+
+All endpoints require authentication via HTTP-only cookie. The API Gateway Lambda authorizer validates the `qc_session` cookie before each request and passes the authenticated user's ID to the Lambda function.
+
+**Important:**
+- Client requests must include `credentials: 'include'` to send cookies
+- The `userId` is automatically extracted from the session
+- Clients **cannot** specify their own `userId` in requests
+- All file operations are scoped to the authenticated user
 
 ## API Endpoints
 
@@ -73,7 +84,6 @@ Initiate a multipart upload for one or more files.
 **Request Body:**
 ```json
 {
-  "userId": "user123",
   "files": [
     {
       "filename": "video.mp4",
@@ -127,7 +137,6 @@ Complete a multipart upload after all parts are uploaded.
 **Request Body:**
 ```json
 {
-  "userId": "user123",
   "fileId": "550e8400-e29b-41d4-a716-446655440000",
   "s3Key": "uploads/user123/visual/2025/11/19/abc-123/video.mp4",
   "uploadId": "...",
@@ -162,14 +171,13 @@ Complete a multipart upload after all parts are uploaded.
 List user's media files with optional filtering and pagination.
 
 **Query Parameters:**
-- `userId` (required): User ID
 - `mediaType` (optional): Filter by `visual` or `audio`
 - `limit` (optional): Results per page (default: 50, max: 1000)
 - `continuationToken` (optional): Pagination token
 
 **Example:**
 ```
-GET /media?userId=user123&mediaType=visual&limit=20
+GET /media?mediaType=visual&limit=20
 ```
 
 **Response:**
@@ -206,7 +214,6 @@ GET /media?userId=user123&mediaType=visual&limit=20
 Search media files by partial filename match.
 
 **Query Parameters:**
-- `userId` (required): User ID
 - `query` (required): Search query (partial filename)
 - `mediaType` (optional): Filter by `visual` or `audio`
 - `limit` (optional): Results per page (default: 50, max: 1000)
@@ -214,7 +221,7 @@ Search media files by partial filename match.
 
 **Example:**
 ```
-GET /media/search?userId=user123&query=vacation&mediaType=visual
+GET /media/search?query=vacation&mediaType=visual
 ```
 
 **Response:**
@@ -255,7 +262,6 @@ Delete one or more media files.
 **Request Body:**
 ```json
 {
-  "userId": "user123",
   "fileKeys": [
     "uploads/user123/visual/2025/11/19/abc-123/video.mp4",
     "uploads/user123/audio/2025/11/19/xyz-456/song.mp3"
@@ -294,7 +300,6 @@ Rename a media file.
 **Request Body:**
 ```json
 {
-  "userId": "user123",
   "fileKey": "uploads/user123/visual/2025/11/19/abc-123/old-name.mp4",
   "newFilename": "new-name.mp4"
 }
@@ -366,7 +371,6 @@ When uploading visual media, upload the thumbnail as a separate file:
 
 ```json
 {
-  "userId": "user123",
   "files": [
     {
       "filename": "video.mp4",
@@ -427,11 +431,15 @@ The system allows:
 **Audio:**
 - `audio/mpeg`, `audio/mp4`, `audio/wav`, `audio/aac`, `audio/ogg`
 
-### UserId
+### UserId (from Authorizer)
+
+The userId is automatically extracted from the authenticated session by the API Gateway authorizer. It must meet these format requirements:
 
 - Alphanumeric, dashes, underscores only
 - Max 128 characters
 - Cannot be empty
+
+**Note:** Clients do not send userId - it is provided by the authorizer after validating the session cookie.
 
 ### Parts (for multipart upload)
 
@@ -593,12 +601,13 @@ logger.clearContext();
 
 ### Authentication
 
-**Current (MVP):** Accepts `userId` in request body/query params for testing.
+All endpoints require authentication via API Gateway Lambda authorizer:
 
-**Production:** Replace with API Gateway authorizer that:
-- Validates JWT/session tokens
-- Extracts authenticated user ID
-- Passes user context to Lambda
+- **Session Validation**: Validates the `qc_session` HTTP-only cookie before each request
+- **Automatic User ID Extraction**: The authenticated user's ID is automatically extracted from the session
+- **Request Context**: User information is passed to Lambda via `event.requestContext.authorizer`
+- **Client Requirements**: Requests must include `credentials: 'include'` to send cookies
+- **Security**: Clients cannot specify or impersonate other users - the userId comes only from the validated session
 
 ### Input Validation
 

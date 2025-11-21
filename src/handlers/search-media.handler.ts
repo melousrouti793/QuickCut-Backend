@@ -16,6 +16,7 @@ import { validationService } from '../services/validation.service';
 import { s3Service } from '../services/s3.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
+import { getAuthenticatedUserId } from '../utils/auth';
 
 /**
  * Lambda handler for search media requests
@@ -37,19 +38,19 @@ export async function handler(
     // Validate configuration on cold start
     validateConfig();
 
+    // Extract authenticated userId from authorizer context
+    const userId = getAuthenticatedUserId(event);
+    logger.setContext({ userId });
+
     // Parse query parameters
     const queryParams = parseQueryParameters(event);
 
     // Validate query parameters
     validationService.validateSearchMediaQueryParams(queryParams);
 
-    // Validate userId from query params
-    validationService.validateUserId(queryParams.userId);
-    logger.setContext({ userId: queryParams.userId });
-
-    // Build params for S3 service
+    // Build params for S3 service (use authenticated userId from authorizer)
     const searchParams: SearchMediaQueryParams = {
-      userId: queryParams.userId,
+      userId,
       query: queryParams.query,
       mediaType: queryParams.mediaType as 'visual' | 'audio' | undefined,
       limit: queryParams.limit ? parseInt(queryParams.limit, 10) : 50,
@@ -84,7 +85,7 @@ export async function handler(
       query: searchParams.query,
       matchCount: result.files.length,
       hasMore: result.hasMore,
-      userId: searchParams.userId,
+      userId,
     });
 
     return buildApiResponse(response);
@@ -100,21 +101,12 @@ export async function handler(
  * Parse query parameters from event
  */
 function parseQueryParameters(event: APIGatewayProxyEventV2): {
-  userId: string;
   query: string;
   mediaType?: string;
   limit?: string;
   continuationToken?: string;
 } {
   const queryParams = event.queryStringParameters || {};
-
-  if (!queryParams.userId) {
-    throw new AppError(
-      HttpStatus.BAD_REQUEST,
-      'INVALID_REQUEST' as any,
-      'Query parameter "userId" is required'
-    );
-  }
 
   if (!queryParams.query) {
     throw new AppError(
@@ -125,7 +117,6 @@ function parseQueryParameters(event: APIGatewayProxyEventV2): {
   }
 
   return {
-    userId: queryParams.userId,
     query: queryParams.query,
     mediaType: queryParams.mediaType,
     limit: queryParams.limit,

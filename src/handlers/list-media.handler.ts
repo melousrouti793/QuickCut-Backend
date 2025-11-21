@@ -16,6 +16,7 @@ import { validationService } from '../services/validation.service';
 import { s3Service } from '../services/s3.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
+import { getAuthenticatedUserId } from '../utils/auth';
 
 /**
  * Lambda handler for list media requests
@@ -37,19 +38,19 @@ export async function handler(
     // Validate configuration on cold start
     validateConfig();
 
+    // Extract authenticated userId from authorizer context
+    const userId = getAuthenticatedUserId(event);
+    logger.setContext({ userId });
+
     // Parse query parameters
     const queryParams = parseQueryParameters(event);
 
     // Validate query parameters
     validationService.validateListMediaQueryParams(queryParams);
 
-    // Validate userId from query params
-    validationService.validateUserId(queryParams.userId);
-    logger.setContext({ userId: queryParams.userId });
-
-    // Build params for S3 service
+    // Build params for S3 service (use authenticated userId from authorizer)
     const listParams: ListMediaQueryParams = {
-      userId: queryParams.userId,
+      userId,
       mediaType: queryParams.mediaType as 'visual' | 'audio' | undefined,
       limit: queryParams.limit ? parseInt(queryParams.limit, 10) : 50,
       continuationToken: queryParams.continuationToken,
@@ -73,7 +74,7 @@ export async function handler(
     logger.info('List media request completed successfully', {
       fileCount: result.files.length,
       hasMore: result.hasMore,
-      userId: queryParams.userId,
+      userId,
     });
 
     return buildApiResponse(response);
@@ -89,23 +90,13 @@ export async function handler(
  * Parse query parameters from event
  */
 function parseQueryParameters(event: APIGatewayProxyEventV2): {
-  userId: string;
   mediaType?: string;
   limit?: string;
   continuationToken?: string;
 } {
   const queryParams = event.queryStringParameters || {};
 
-  if (!queryParams.userId) {
-    throw new AppError(
-      HttpStatus.BAD_REQUEST,
-      'INVALID_REQUEST' as any,
-      'Query parameter "userId" is required'
-    );
-  }
-
   return {
-    userId: queryParams.userId,
     mediaType: queryParams.mediaType,
     limit: queryParams.limit,
     continuationToken: queryParams.continuationToken,
