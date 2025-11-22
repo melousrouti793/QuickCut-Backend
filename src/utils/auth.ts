@@ -45,12 +45,30 @@ export function extractAuthContext(event: APIGatewayProxyEventV2): AuthorizerCon
     );
   }
 
+  // API Gateway wraps Lambda authorizer context in a 'lambda' property
+  const authData = authorizer.lambda || authorizer;
+
+  logger.debug('Auth data extraction', {
+    hasLambdaProperty: !!authorizer.lambda,
+    authData,
+    authDataKeys: Object.keys(authData),
+  });
+
   // Extract userId from authorizer context
-  const userId = authorizer.userId;
+  const userId = authData.userId;
+
+  logger.debug('UserId extraction', {
+    userId,
+    userIdType: typeof userId,
+    authDataUserId: authData.userId,
+  });
 
   if (!userId || typeof userId !== 'string') {
     logger.warn('Missing or invalid userId in authorizer context', {
       authorizer,
+      authData,
+      userId,
+      userIdType: typeof userId,
     });
 
     throw new AppError(
@@ -63,8 +81,8 @@ export function extractAuthContext(event: APIGatewayProxyEventV2): AuthorizerCon
   // Build authorizer context object
   const authContext: AuthorizerContext = {
     userId,
-    userEmail: typeof authorizer.userEmail === 'string' ? authorizer.userEmail : undefined,
-    sessionId: typeof authorizer.sessionId === 'string' ? authorizer.sessionId : undefined,
+    userEmail: typeof authData.userEmail === 'string' ? authData.userEmail : undefined,
+    sessionId: typeof authData.sessionId === 'string' ? authData.sessionId : undefined,
   };
 
   logger.debug('Authorizer context extracted successfully', {
