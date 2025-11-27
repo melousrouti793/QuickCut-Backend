@@ -1,6 +1,7 @@
 /**
  * Search Media Handler
  * Lambda handler for searching user's media files by partial filename
+ * Queries DynamoDB for metadata, generates presigned URLs for S3 access
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
@@ -9,11 +10,13 @@ import {
   SearchMediaSuccessResponse,
   ErrorResponse,
   HttpStatus,
-  SearchMediaQueryParams,
+  MediaFileInfo,
+  MediaType,
   MediaTypeFilter,
 } from '../types';
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
+import { dynamoDBService } from '../services/dynamodb.service';
 import { s3Service } from '../services/s3.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
@@ -47,45 +50,63 @@ export async function handler(
     const queryParams = parseQueryParameters(event);
 
     // Validate query parameters
-    validationService.validateSearchMediaQueryParams(queryParams);
-
-    // Build params for S3 service (use authenticated userId from authorizer)
-    const searchParams: SearchMediaQueryParams = {
-      userId,
+    validationService.validateSearchMediaQueryParams({
       query: queryParams.query,
-      mediaType: queryParams.mediaType as MediaTypeFilter | undefined,
-      limit: queryParams.limit ? parseInt(queryParams.limit, 10) : 50,
+      mediaType: queryParams.mediaType,
+      limit: queryParams.limit,
       continuationToken: queryParams.continuationToken,
-    };
-
-    logger.info('Searching media files', {
-      userId: searchParams.userId,
-      query: searchParams.query,
-      mediaType: searchParams.mediaType,
-      limit: searchParams.limit,
     });
 
-    // Search media files from S3
-    const result = await s3Service.searchMediaFiles(searchParams);
+    // Convert mediaType filter to DynamoDB format (singular form)
+    const mediaType = convertMediaTypeFilter(queryParams.mediaType);
+    const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
+
+    logger.info('Searching media files', {
+      userId,
+      query: queryParams.query,
+      mediaType,
+      limit,
+    });
+
+    // Search media files from DynamoDB
+    const items = await dynamoDBService.searchMediaByFilename(userId, queryParams.query, {
+      mediaType,
+      limit,
+    });
+
+    // Generate presigned URLs for each item
+    const files: MediaFileInfo[] = await Promise.all(
+      items.map(async (item) => ({
+        mediaId: item.mediaId,
+        filename: item.filename,
+        mediaType: item.mediaType,
+        mimeType: item.mimeType,
+        size: item.sizeBytes,
+        uploadedAt: item.createdAt,
+        url: await s3Service.generatePresignedGetUrl(item.s3Key),
+        thumbnailUrl: item.thumbnailS3Key
+          ? await s3Service.generatePresignedGetUrl(item.thumbnailS3Key)
+          : null,
+      }))
+    );
 
     // Build success response
     const response: SearchMediaSuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'Search completed successfully',
       data: {
-        query: searchParams.query,
-        mediaType: searchParams.mediaType,
-        files: result.files,
-        count: result.files.length,
-        hasMore: result.hasMore,
-        nextToken: result.nextToken,
+        query: queryParams.query,
+        mediaType: queryParams.mediaType as MediaTypeFilter | undefined,
+        files,
+        count: files.length,
+        hasMore: files.length >= limit,
+        nextToken: undefined, // Simplified pagination for search
       },
     };
 
     logger.info('Search media request completed successfully', {
-      query: searchParams.query,
-      matchCount: result.files.length,
-      hasMore: result.hasMore,
+      query: queryParams.query,
+      matchCount: files.length,
       userId,
     });
 
@@ -123,6 +144,24 @@ function parseQueryParameters(event: APIGatewayProxyEventV2): {
     limit: queryParams.limit,
     continuationToken: queryParams.continuationToken,
   };
+}
+
+/**
+ * Convert media type filter from plural/aggregate form to singular DynamoDB form
+ */
+function convertMediaTypeFilter(filter?: string): MediaType | undefined {
+  if (!filter) return undefined;
+
+  const filterMap: Record<string, MediaType | undefined> = {
+    video: 'video',
+    videos: 'video',
+    image: 'image',
+    images: 'image',
+    audio: 'audio',
+    audios: 'audio',
+  };
+
+  return filterMap[filter.toLowerCase()];
 }
 
 /**

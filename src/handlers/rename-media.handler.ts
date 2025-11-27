@@ -1,6 +1,7 @@
 /**
  * Rename Media Handler
  * Lambda handler for renaming user's media files
+ * Updates filename in DynamoDB only - S3 keys remain unchanged
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
@@ -11,8 +12,9 @@ import {
   HttpStatus,
   ErrorCode,
 } from '../types';
-import { AppError, S3ServiceError } from '../errors/AppError';
+import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
+import { dynamoDBService } from '../services/dynamodb.service';
 import { s3Service } from '../services/s3.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
@@ -54,23 +56,40 @@ export async function handler(
 
     logger.info('Renaming media file', {
       userId,
-      fileKey: request.fileKey,
+      mediaId: request.mediaId,
       newFilename: sanitizedFilename,
     });
 
-    // Rename media file in S3
-    const result = await s3Service.renameMediaFile(request.fileKey, sanitizedFilename);
+    // Get existing record to verify ownership and get s3Key
+    const mediaItem = await dynamoDBService.getMediaItem(userId, request.mediaId);
+    if (!mediaItem) {
+      throw new AppError(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, 'Media not found');
+    }
+
+    // Update filename in DynamoDB only (no S3 changes)
+    await dynamoDBService.updateMediaFilename(userId, request.mediaId, sanitizedFilename);
+
+    // Generate presigned URLs for response
+    const url = await s3Service.generatePresignedGetUrl(mediaItem.s3Key);
+    const thumbnailUrl = mediaItem.thumbnailS3Key
+      ? await s3Service.generatePresignedGetUrl(mediaItem.thumbnailS3Key)
+      : null;
 
     // Build success response
     const response: RenameMediaSuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'File renamed successfully',
-      data: result,
+      data: {
+        mediaId: request.mediaId,
+        filename: sanitizedFilename,
+        url,
+        thumbnailUrl,
+      },
     };
 
     logger.info('Rename media request completed successfully', {
-      oldKey: result.oldKey,
-      newKey: result.newKey,
+      mediaId: request.mediaId,
+      newFilename: sanitizedFilename,
       userId,
     });
 
@@ -86,7 +105,7 @@ export async function handler(
 /**
  * Parse request body from event
  */
-function parseRequestBody(event: APIGatewayProxyEventV2): { fileKey: string; newFilename: string } {
+function parseRequestBody(event: APIGatewayProxyEventV2): { mediaId: string; newFilename: string } {
   if (!event.body) {
     throw new AppError(
       HttpStatus.BAD_REQUEST,
@@ -98,11 +117,11 @@ function parseRequestBody(event: APIGatewayProxyEventV2): { fileKey: string; new
   try {
     const body = JSON.parse(event.body);
 
-    if (!body.fileKey || typeof body.fileKey !== 'string') {
+    if (!body.mediaId || typeof body.mediaId !== 'string') {
       throw new AppError(
         HttpStatus.BAD_REQUEST,
         'INVALID_REQUEST' as any,
-        'Request must contain a "fileKey" field'
+        'Request must contain a "mediaId" field'
       );
     }
 
@@ -115,7 +134,7 @@ function parseRequestBody(event: APIGatewayProxyEventV2): { fileKey: string; new
     }
 
     return {
-      fileKey: body.fileKey,
+      mediaId: body.mediaId,
       newFilename: body.newFilename,
     };
   } catch (error) {
@@ -138,42 +157,6 @@ function handleError(
   error: unknown,
   requestId: string
 ): APIGatewayProxyResultV2 {
-  // Handle S3ServiceError for specific cases
-  if (error instanceof S3ServiceError) {
-    // Check for specific error messages
-    if (error.message.includes('already exists')) {
-      const errorResponse: ErrorResponse = {
-        statusCode: HttpStatus.CONFLICT,
-        errorCode: ErrorCode.CONFLICT,
-        message: 'File with this name already exists',
-        details: error.details,
-        requestId,
-      };
-      return buildApiResponse(errorResponse);
-    }
-
-    if (error.message.includes('not found')) {
-      const errorResponse: ErrorResponse = {
-        statusCode: HttpStatus.NOT_FOUND,
-        errorCode: ErrorCode.NOT_FOUND,
-        message: 'Source file not found',
-        details: error.details,
-        requestId,
-      };
-      return buildApiResponse(errorResponse);
-    }
-
-    // Generic S3ServiceError
-    const errorResponse: ErrorResponse = {
-      statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-      errorCode: 'INTERNAL_SERVER_ERROR',
-      message: error.message,
-      details: error.details,
-      requestId,
-    };
-    return buildApiResponse(errorResponse);
-  }
-
   // Handle known application errors
   if (error instanceof AppError) {
     const errorResponse: ErrorResponse = {

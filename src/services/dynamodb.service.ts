@@ -8,6 +8,10 @@ import {
   DynamoDBDocumentClient,
   BatchWriteCommand,
   BatchWriteCommandInput,
+  QueryCommand,
+  GetCommand,
+  UpdateCommand,
+  DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { dynamoDBConfig } from '../config';
 import { logger } from '../utils/logger';
@@ -15,6 +19,7 @@ import { DynamoDBServiceError } from '../errors/AppError';
 import {
   MediaItem,
   MediaType,
+  MediaStatus,
   MediaFile,
   MediaFileWithThumbnail,
   UploadConfiguration,
@@ -228,6 +233,331 @@ export class DynamoDBService {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Query user's media items from DynamoDB
+   * Returns paginated results with optional filtering
+   */
+  async getMediaByUser(
+    userId: string,
+    options?: {
+      mediaType?: MediaType;
+      status?: MediaStatus;
+      limit?: number;
+      exclusiveStartKey?: Record<string, any>;
+    }
+  ): Promise<{ items: MediaItem[]; lastEvaluatedKey?: Record<string, any> }> {
+    const { mediaType, status = 'ready', limit = 50, exclusiveStartKey } = options || {};
+
+    logger.debug('Querying media by user', { userId, mediaType, status, limit });
+
+    try {
+      // Build filter expression
+      const filterExpressions: string[] = [];
+      const expressionAttributeValues: Record<string, any> = {
+        ':pk': `USER#${userId}`,
+        ':skPrefix': 'MEDIA#',
+      };
+      const expressionAttributeNames: Record<string, string> = {};
+
+      // Always filter by status
+      filterExpressions.push('#status = :status');
+      expressionAttributeValues[':status'] = status;
+      expressionAttributeNames['#status'] = 'status';
+
+      // Optionally filter by mediaType
+      if (mediaType) {
+        filterExpressions.push('mediaType = :mediaType');
+        expressionAttributeValues[':mediaType'] = mediaType;
+      }
+
+      const command = new QueryCommand({
+        TableName: dynamoDBConfig.tableName,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
+        FilterExpression: filterExpressions.join(' AND '),
+        ExpressionAttributeValues: expressionAttributeValues,
+        ExpressionAttributeNames: expressionAttributeNames,
+        Limit: limit,
+        ExclusiveStartKey: exclusiveStartKey,
+        ScanIndexForward: false, // Sort by SK descending (newest first)
+      });
+
+      const response = await this.docClient.send(command);
+
+      logger.debug('Query completed', {
+        userId,
+        itemCount: response.Items?.length || 0,
+        hasMore: !!response.LastEvaluatedKey,
+      });
+
+      return {
+        items: (response.Items || []) as MediaItem[],
+        lastEvaluatedKey: response.LastEvaluatedKey,
+      };
+    } catch (error) {
+      logger.error('Failed to query media by user', error, { userId });
+      throw new DynamoDBServiceError('Failed to query media', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
+      });
+    }
+  }
+
+  /**
+   * Get a single media item by userId and mediaId
+   */
+  async getMediaItem(userId: string, mediaId: string): Promise<MediaItem | null> {
+    logger.debug('Getting media item', { userId, mediaId });
+
+    try {
+      const command = new GetCommand({
+        TableName: dynamoDBConfig.tableName,
+        Key: {
+          PK: `USER#${userId}`,
+          SK: `MEDIA#${mediaId}`,
+        },
+      });
+
+      const response = await this.docClient.send(command);
+
+      if (!response.Item) {
+        logger.debug('Media item not found', { userId, mediaId });
+        return null;
+      }
+
+      return response.Item as MediaItem;
+    } catch (error) {
+      logger.error('Failed to get media item', error, { userId, mediaId });
+      throw new DynamoDBServiceError('Failed to get media item', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
+        mediaId,
+      });
+    }
+  }
+
+  /**
+   * Update media status (for complete handler)
+   */
+  async updateMediaStatus(
+    userId: string,
+    mediaId: string,
+    status: MediaStatus
+  ): Promise<void> {
+    logger.debug('Updating media status', { userId, mediaId, status });
+
+    try {
+      const command = new UpdateCommand({
+        TableName: dynamoDBConfig.tableName,
+        Key: {
+          PK: `USER#${userId}`,
+          SK: `MEDIA#${mediaId}`,
+        },
+        UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
+        ExpressionAttributeNames: {
+          '#status': 'status',
+        },
+        ExpressionAttributeValues: {
+          ':status': status,
+          ':updatedAt': new Date().toISOString(),
+        },
+        ConditionExpression: 'attribute_exists(PK)',
+      });
+
+      await this.docClient.send(command);
+
+      logger.info('Media status updated', { userId, mediaId, status });
+    } catch (error) {
+      logger.error('Failed to update media status', error, { userId, mediaId, status });
+      throw new DynamoDBServiceError('Failed to update media status', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
+        mediaId,
+      });
+    }
+  }
+
+  /**
+   * Update media filename (for rename handler - DynamoDB only, no S3 changes)
+   */
+  async updateMediaFilename(
+    userId: string,
+    mediaId: string,
+    filename: string
+  ): Promise<void> {
+    logger.debug('Updating media filename', { userId, mediaId, filename });
+
+    try {
+      const command = new UpdateCommand({
+        TableName: dynamoDBConfig.tableName,
+        Key: {
+          PK: `USER#${userId}`,
+          SK: `MEDIA#${mediaId}`,
+        },
+        UpdateExpression: 'SET filename = :filename, updatedAt = :updatedAt',
+        ExpressionAttributeValues: {
+          ':filename': filename,
+          ':updatedAt': new Date().toISOString(),
+        },
+        ConditionExpression: 'attribute_exists(PK)',
+      });
+
+      await this.docClient.send(command);
+
+      logger.info('Media filename updated', { userId, mediaId, filename });
+    } catch (error) {
+      logger.error('Failed to update media filename', error, { userId, mediaId });
+      throw new DynamoDBServiceError('Failed to update media filename', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
+        mediaId,
+      });
+    }
+  }
+
+  /**
+   * Delete a single media record
+   */
+  async deleteMediaRecord(userId: string, mediaId: string): Promise<void> {
+    logger.debug('Deleting media record', { userId, mediaId });
+
+    try {
+      const command = new DeleteCommand({
+        TableName: dynamoDBConfig.tableName,
+        Key: {
+          PK: `USER#${userId}`,
+          SK: `MEDIA#${mediaId}`,
+        },
+      });
+
+      await this.docClient.send(command);
+
+      logger.info('Media record deleted', { userId, mediaId });
+    } catch (error) {
+      logger.error('Failed to delete media record', error, { userId, mediaId });
+      throw new DynamoDBServiceError('Failed to delete media record', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
+        mediaId,
+      });
+    }
+  }
+
+  /**
+   * Delete multiple media records in batch
+   */
+  async deleteMediaRecords(userId: string, mediaIds: string[]): Promise<void> {
+    if (mediaIds.length === 0) {
+      return;
+    }
+
+    logger.debug('Deleting media records in batch', { userId, count: mediaIds.length });
+
+    try {
+      // Split into batches of 25 (DynamoDB limit)
+      const batches: string[][] = [];
+      for (let i = 0; i < mediaIds.length; i += MAX_BATCH_WRITE_ITEMS) {
+        batches.push(mediaIds.slice(i, i + MAX_BATCH_WRITE_ITEMS));
+      }
+
+      for (const batch of batches) {
+        const params: BatchWriteCommandInput = {
+          RequestItems: {
+            [dynamoDBConfig.tableName]: batch.map((mediaId) => ({
+              DeleteRequest: {
+                Key: {
+                  PK: `USER#${userId}`,
+                  SK: `MEDIA#${mediaId}`,
+                },
+              },
+            })),
+          },
+        };
+
+        await this.docClient.send(new BatchWriteCommand(params));
+      }
+
+      logger.info('Media records deleted', { userId, count: mediaIds.length });
+    } catch (error) {
+      logger.error('Failed to delete media records', error, { userId, count: mediaIds.length });
+      throw new DynamoDBServiceError('Failed to delete media records', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
+        count: mediaIds.length,
+      });
+    }
+  }
+
+  /**
+   * Search media by filename (contains filter)
+   * Note: This uses a scan with filter, which is less efficient than a GSI query
+   * For better performance at scale, consider adding a GSI on filename
+   */
+  async searchMediaByFilename(
+    userId: string,
+    query: string,
+    options?: {
+      mediaType?: MediaType;
+      limit?: number;
+    }
+  ): Promise<MediaItem[]> {
+    const { mediaType, limit = 50 } = options || {};
+    const normalizedQuery = query.toLowerCase().trim();
+
+    logger.debug('Searching media by filename', { userId, query: normalizedQuery, mediaType, limit });
+
+    try {
+      // Build filter expression
+      const filterExpressions: string[] = [
+        '#status = :status',
+        'contains(#filename, :query)',
+      ];
+      const expressionAttributeValues: Record<string, any> = {
+        ':pk': `USER#${userId}`,
+        ':skPrefix': 'MEDIA#',
+        ':status': 'ready',
+        ':query': normalizedQuery,
+      };
+      const expressionAttributeNames: Record<string, string> = {
+        '#status': 'status',
+        '#filename': 'filename',
+      };
+
+      if (mediaType) {
+        filterExpressions.push('mediaType = :mediaType');
+        expressionAttributeValues[':mediaType'] = mediaType;
+      }
+
+      const command = new QueryCommand({
+        TableName: dynamoDBConfig.tableName,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
+        FilterExpression: filterExpressions.join(' AND '),
+        ExpressionAttributeValues: expressionAttributeValues,
+        ExpressionAttributeNames: expressionAttributeNames,
+        Limit: limit * 3, // Over-fetch since we're filtering client-side
+      });
+
+      const response = await this.docClient.send(command);
+
+      // Take only the requested limit
+      const items = (response.Items || []).slice(0, limit) as MediaItem[];
+
+      logger.debug('Search completed', {
+        userId,
+        query: normalizedQuery,
+        resultCount: items.length,
+      });
+
+      return items;
+    } catch (error) {
+      logger.error('Failed to search media', error, { userId, query });
+      throw new DynamoDBServiceError('Failed to search media', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
+        query,
+      });
+    }
   }
 }
 

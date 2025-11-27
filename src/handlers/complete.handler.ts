@@ -14,6 +14,7 @@ import {
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
 import { s3Service } from '../services/s3.service';
+import { dynamoDBService } from '../services/dynamodb.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
 import { getAuthenticatedUserId } from '../utils/auth';
@@ -55,6 +56,17 @@ export async function handler(
       request.uploadId,
       request.parts
     );
+
+    // Update DynamoDB status to 'ready'
+    try {
+      await dynamoDBService.updateMediaStatus(userId, request.fileId, 'ready');
+    } catch (dbError) {
+      // Log but don't fail - S3 upload succeeded, status can be fixed by background job
+      logger.error('Failed to update DynamoDB status to ready', dbError, {
+        fileId: request.fileId,
+        userId,
+      });
+    }
 
     // Build success response
     const response: CompleteSuccessResponse = {

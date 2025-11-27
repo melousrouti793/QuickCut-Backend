@@ -152,17 +152,19 @@ export interface CompleteSuccessResponse {
 }
 
 export interface MediaFileInfo {
-  /** S3 key for the file */
-  fileKey: string;
-  /** Original filename */
+  /** Unique media identifier */
+  mediaId: string;
+  /** Original filename (from DynamoDB) */
   filename: string;
-  /** Media type (videos, images, or audios) */
-  mediaType: MediaTypeStorage;
+  /** Media type (video, image, or audio - singular form) */
+  mediaType: MediaType;
+  /** MIME type */
+  mimeType: string;
   /** File size in bytes */
   size: number;
   /** Upload timestamp */
   uploadedAt: string;
-  /** S3 URL for the file */
+  /** Presigned URL for the file */
   url: string;
   /** Presigned URL for thumbnail (present for videos, null for images/audios) */
   thumbnailUrl: string | null;
@@ -314,13 +316,13 @@ export interface ValidationResult {
 export interface DeleteMediaRequest {
   /** User ID from authorizer context (used for authorization checks) */
   userId: string;
-  /** Array of S3 file keys to delete */
-  fileKeys: string[];
+  /** Array of media IDs to delete */
+  mediaIds: string[];
 }
 
 export interface DeleteResult {
-  /** S3 file key */
-  fileKey: string;
+  /** Media ID */
+  mediaId: string;
   /** Whether deletion succeeded */
   success: boolean;
   /** Error message if deletion failed */
@@ -328,11 +330,11 @@ export interface DeleteResult {
 }
 
 export interface DeleteMediaData {
-  /** Successfully deleted file keys */
+  /** Successfully deleted media IDs */
   deleted: string[];
   /** Failed deletions with error details */
   failed: DeleteResult[];
-  /** Total number of files requested for deletion */
+  /** Total number of media items requested for deletion */
   totalRequested: number;
   /** Number of successful deletions */
   successCount: number;
@@ -356,20 +358,18 @@ export interface DeleteMediaSuccessResponse {
 export interface RenameMediaRequest {
   /** User ID from authorizer context (used for authorization checks) */
   userId: string;
-  /** Original S3 file key */
-  fileKey: string;
-  /** New filename (sanitized) */
+  /** Media ID to rename */
+  mediaId: string;
+  /** New filename */
   newFilename: string;
 }
 
 export interface RenameMediaData {
-  /** Original S3 file key */
-  oldKey: string;
-  /** New S3 file key */
-  newKey: string;
+  /** Media ID */
+  mediaId: string;
   /** New filename */
   filename: string;
-  /** Presigned URL for the renamed file */
+  /** Presigned URL for the file */
   url: string;
   /** Presigned URL for thumbnail (present for videos, null for images/audios) */
   thumbnailUrl: string | null;

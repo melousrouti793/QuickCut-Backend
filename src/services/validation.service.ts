@@ -19,10 +19,6 @@ import { logger } from '../utils/logger';
 import {
   sanitizeFilename,
   sanitizeUserId,
-  validateFileKey,
-  authorizeFileAccess,
-  extractFilenameFromKey,
-  validateExtensionMatch,
 } from '../utils/sanitize';
 
 export class ValidationService {
@@ -562,33 +558,25 @@ export class ValidationService {
       }
     }
 
-    // Validate fileKeys array
-    if (!request.fileKeys || !Array.isArray(request.fileKeys)) {
-      errors.push('fileKeys must be a non-empty array');
+    // Validate mediaIds array
+    if (!request.mediaIds || !Array.isArray(request.mediaIds)) {
+      errors.push('mediaIds must be a non-empty array');
     } else {
-      if (request.fileKeys.length === 0) {
-        errors.push('fileKeys array cannot be empty');
+      if (request.mediaIds.length === 0) {
+        errors.push('mediaIds array cannot be empty');
       }
 
-      if (request.fileKeys.length > 100) {
-        errors.push('Cannot delete more than 100 files at once');
+      if (request.mediaIds.length > 100) {
+        errors.push('Cannot delete more than 100 media items at once');
       }
 
-      // Validate each file key
-      request.fileKeys.forEach((fileKey, index) => {
-        try {
-          validateFileKey(fileKey);
-        } catch (error) {
-          if (error instanceof Error) {
-            errors.push(`File key at index ${index}: ${error.message}`);
-          }
-        }
-
-        // Validate authorization
-        if (!authorizeFileAccess(fileKey, request.userId)) {
-          errors.push(
-            `File key at index ${index}: You can only delete your own files`
-          );
+      // Validate each media ID is a valid UUID
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      request.mediaIds.forEach((mediaId, index) => {
+        if (!mediaId || typeof mediaId !== 'string') {
+          errors.push(`Media ID at index ${index}: must be a non-empty string`);
+        } else if (!uuidRegex.test(mediaId)) {
+          errors.push(`Media ID at index ${index}: must be a valid UUID`);
         }
       });
     }
@@ -619,18 +607,12 @@ export class ValidationService {
       }
     }
 
-    // Validate fileKey
-    try {
-      validateFileKey(request.fileKey);
-    } catch (error) {
-      if (error instanceof Error) {
-        errors.push(`File key: ${error.message}`);
-      }
-    }
-
-    // Validate authorization
-    if (!authorizeFileAccess(request.fileKey, request.userId)) {
-      errors.push('You can only rename your own files');
+    // Validate mediaId is a valid UUID
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!request.mediaId || typeof request.mediaId !== 'string') {
+      errors.push('mediaId is required and must be a string');
+    } else if (!uuidRegex.test(request.mediaId)) {
+      errors.push('mediaId must be a valid UUID');
     }
 
     // Validate and sanitize new filename
@@ -642,15 +624,8 @@ export class ValidationService {
       }
     }
 
-    // Validate extension match
-    try {
-      const oldFilename = extractFilenameFromKey(request.fileKey);
-      validateExtensionMatch(oldFilename, request.newFilename);
-    } catch (error) {
-      if (error instanceof Error) {
-        errors.push(error.message);
-      }
-    }
+    // Note: Extension validation removed since we now only update the display name in DynamoDB
+    // The original S3 key (with original extension) remains unchanged
 
     if (errors.length > 0) {
       throw new ValidationError(

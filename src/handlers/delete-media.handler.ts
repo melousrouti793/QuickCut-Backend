@@ -1,6 +1,7 @@
 /**
  * Delete Media Handler
  * Lambda handler for deleting user's media files
+ * Deletes from both S3 and DynamoDB by mediaId
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
@@ -9,10 +10,12 @@ import {
   DeleteMediaSuccessResponse,
   ErrorResponse,
   HttpStatus,
+  DeleteResult,
 } from '../types';
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
 import { s3Service } from '../services/s3.service';
+import { dynamoDBService } from '../services/dynamodb.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
 import { getAuthenticatedUserId } from '../utils/auth';
@@ -49,14 +52,61 @@ export async function handler(
 
     logger.info('Deleting media files', {
       userId,
-      fileCount: request.fileKeys.length,
+      mediaCount: request.mediaIds.length,
     });
 
-    // Delete media files from S3
-    const results = await s3Service.deleteMediaFiles(request.fileKeys);
+    // Delete each media item (from S3 and DynamoDB)
+    const results: DeleteResult[] = await Promise.all(
+      request.mediaIds.map(async (mediaId) => {
+        try {
+          // Get the media item from DynamoDB to find S3 keys
+          const mediaItem = await dynamoDBService.getMediaItem(userId, mediaId);
+
+          if (!mediaItem) {
+            return {
+              mediaId,
+              success: false,
+              error: 'Media not found',
+            };
+          }
+
+          // Delete from S3 (main file)
+          await s3Service.deleteObject(mediaItem.s3Key);
+
+          // Delete thumbnail if exists
+          if (mediaItem.thumbnailS3Key) {
+            try {
+              await s3Service.deleteObject(mediaItem.thumbnailS3Key);
+            } catch (thumbnailError) {
+              // Log but don't fail if thumbnail deletion fails
+              logger.warn('Failed to delete thumbnail', {
+                mediaId,
+                thumbnailS3Key: mediaItem.thumbnailS3Key,
+                error: thumbnailError instanceof Error ? thumbnailError.message : String(thumbnailError),
+              });
+            }
+          }
+
+          // Delete from DynamoDB
+          await dynamoDBService.deleteMediaRecord(userId, mediaId);
+
+          return {
+            mediaId,
+            success: true,
+          };
+        } catch (error) {
+          logger.error('Failed to delete media', error, { mediaId });
+          return {
+            mediaId,
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          };
+        }
+      })
+    );
 
     // Separate successful and failed deletions
-    const deleted = results.filter((r) => r.success).map((r) => r.fileKey);
+    const deleted = results.filter((r) => r.success).map((r) => r.mediaId);
     const failed = results.filter((r) => !r.success);
 
     // Build success response
@@ -66,14 +116,14 @@ export async function handler(
       data: {
         deleted,
         failed,
-        totalRequested: request.fileKeys.length,
+        totalRequested: request.mediaIds.length,
         successCount: deleted.length,
         failureCount: failed.length,
       },
     };
 
     logger.info('Delete media request completed', {
-      totalRequested: request.fileKeys.length,
+      totalRequested: request.mediaIds.length,
       successCount: deleted.length,
       failureCount: failed.length,
       userId,
@@ -91,7 +141,7 @@ export async function handler(
 /**
  * Parse request body from event
  */
-function parseRequestBody(event: APIGatewayProxyEventV2): { fileKeys: string[] } {
+function parseRequestBody(event: APIGatewayProxyEventV2): { mediaIds: string[] } {
   if (!event.body) {
     throw new AppError(
       HttpStatus.BAD_REQUEST,
@@ -103,16 +153,16 @@ function parseRequestBody(event: APIGatewayProxyEventV2): { fileKeys: string[] }
   try {
     const body = JSON.parse(event.body);
 
-    if (!body.fileKeys || !Array.isArray(body.fileKeys)) {
+    if (!body.mediaIds || !Array.isArray(body.mediaIds)) {
       throw new AppError(
         HttpStatus.BAD_REQUEST,
         'INVALID_REQUEST' as any,
-        'Request must contain a "fileKeys" array'
+        'Request must contain a "mediaIds" array'
       );
     }
 
     return {
-      fileKeys: body.fileKeys,
+      mediaIds: body.mediaIds,
     };
   } catch (error) {
     if (error instanceof AppError) {

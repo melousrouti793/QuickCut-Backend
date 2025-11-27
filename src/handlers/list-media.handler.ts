@@ -1,6 +1,7 @@
 /**
  * List Media Handler
  * Lambda handler for listing user's media files
+ * Queries DynamoDB for metadata, generates presigned URLs for S3 access
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
@@ -9,11 +10,12 @@ import {
   ListMediaSuccessResponse,
   ErrorResponse,
   HttpStatus,
-  ListMediaQueryParams,
-  MediaTypeFilter,
+  MediaFileInfo,
+  MediaType,
 } from '../types';
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
+import { dynamoDBService } from '../services/dynamodb.service';
 import { s3Service } from '../services/s3.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
@@ -47,34 +49,76 @@ export async function handler(
     const queryParams = parseQueryParameters(event);
 
     // Validate query parameters
-    validationService.validateListMediaQueryParams(queryParams);
-
-    // Build params for S3 service (use authenticated userId from authorizer)
-    const listParams: ListMediaQueryParams = {
-      userId,
-      mediaType: queryParams.mediaType as MediaTypeFilter | undefined,
-      limit: queryParams.limit ? parseInt(queryParams.limit, 10) : 50,
+    validationService.validateListMediaQueryParams({
+      mediaType: queryParams.mediaType,
+      limit: queryParams.limit,
       continuationToken: queryParams.continuationToken,
-    };
+    });
 
-    // List media files from S3
-    const result = await s3Service.listMediaFiles(listParams);
+    // Convert mediaType filter to DynamoDB format (singular form)
+    const mediaType = convertMediaTypeFilter(queryParams.mediaType);
+
+    // Decode continuation token if provided
+    let exclusiveStartKey: Record<string, any> | undefined;
+    if (queryParams.continuationToken) {
+      try {
+        exclusiveStartKey = JSON.parse(
+          Buffer.from(queryParams.continuationToken, 'base64').toString('utf-8')
+        );
+      } catch {
+        throw new AppError(
+          HttpStatus.BAD_REQUEST,
+          'INVALID_REQUEST' as any,
+          'Invalid continuation token'
+        );
+      }
+    }
+
+    // Query DynamoDB for user's media
+    const result = await dynamoDBService.getMediaByUser(userId, {
+      mediaType,
+      status: 'ready',
+      limit: queryParams.limit ? parseInt(queryParams.limit, 10) : 50,
+      exclusiveStartKey,
+    });
+
+    // Generate presigned URLs for each item
+    const files: MediaFileInfo[] = await Promise.all(
+      result.items.map(async (item) => ({
+        mediaId: item.mediaId,
+        filename: item.filename,
+        mediaType: item.mediaType,
+        mimeType: item.mimeType,
+        size: item.sizeBytes,
+        uploadedAt: item.createdAt,
+        url: await s3Service.generatePresignedGetUrl(item.s3Key),
+        thumbnailUrl: item.thumbnailS3Key
+          ? await s3Service.generatePresignedGetUrl(item.thumbnailS3Key)
+          : null,
+      }))
+    );
+
+    // Encode next token if more results available
+    let nextToken: string | undefined;
+    if (result.lastEvaluatedKey) {
+      nextToken = Buffer.from(JSON.stringify(result.lastEvaluatedKey)).toString('base64');
+    }
 
     // Build success response
     const response: ListMediaSuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'Media files retrieved successfully',
       data: {
-        files: result.files,
-        count: result.files.length,
-        hasMore: result.hasMore,
-        nextToken: result.nextToken,
+        files,
+        count: files.length,
+        hasMore: !!result.lastEvaluatedKey,
+        nextToken,
       },
     };
 
     logger.info('List media request completed successfully', {
-      fileCount: result.files.length,
-      hasMore: result.hasMore,
+      fileCount: files.length,
+      hasMore: !!result.lastEvaluatedKey,
       userId,
     });
 
@@ -102,6 +146,27 @@ function parseQueryParameters(event: APIGatewayProxyEventV2): {
     limit: queryParams.limit,
     continuationToken: queryParams.continuationToken,
   };
+}
+
+/**
+ * Convert media type filter from plural/aggregate form to singular DynamoDB form
+ * Input: 'videos' | 'images' | 'audios' | 'visual' | undefined
+ * Output: 'video' | 'image' | 'audio' | undefined
+ */
+function convertMediaTypeFilter(filter?: string): MediaType | undefined {
+  if (!filter) return undefined;
+
+  const filterMap: Record<string, MediaType | undefined> = {
+    video: 'video',
+    videos: 'video',
+    image: 'image',
+    images: 'image',
+    audio: 'audio',
+    audios: 'audio',
+    // 'visual' returns undefined to get both videos and images (handled differently)
+  };
+
+  return filterMap[filter.toLowerCase()];
 }
 
 /**
@@ -147,7 +212,7 @@ function buildApiResponse(
     statusCode: response.statusCode,
     headers: {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*', // Configure based on your CORS requirements
+      'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'Content-Type,Authorization',
       'Access-Control-Allow-Methods': 'GET,OPTIONS',
       'X-Request-ID': 'requestId' in response ? response.requestId || '' : '',
