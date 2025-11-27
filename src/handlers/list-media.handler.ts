@@ -10,6 +10,7 @@ import {
   ErrorResponse,
   HttpStatus,
   ListMediaQueryParams,
+  MediaTypeFilter,
 } from '../types';
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
@@ -51,7 +52,7 @@ export async function handler(
     // Build params for S3 service (use authenticated userId from authorizer)
     const listParams: ListMediaQueryParams = {
       userId,
-      mediaType: queryParams.mediaType as 'visual' | 'audio' | undefined,
+      mediaType: queryParams.mediaType as MediaTypeFilter | undefined,
       limit: queryParams.limit ? parseInt(queryParams.limit, 10) : 50,
       continuationToken: queryParams.continuationToken,
     };

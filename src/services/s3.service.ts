@@ -35,6 +35,8 @@ import {
   DeleteResult,
   RenameMediaData,
   SearchMediaQueryParams,
+  MediaTypeStorage,
+  MediaTypeFilter,
 } from '../types';
 import { buildRenamedKey } from '../utils/sanitize';
 
@@ -113,19 +115,15 @@ export class S3Service {
       fileId
     );
 
-    // Create upload config for thumbnail if provided
+    // Create upload config for thumbnail if provided (only for videos)
     let thumbnailUploadConfig: UploadConfiguration | undefined;
     if (fileWithThumbnail.thumbnail) {
-      // Prepend "thumbnail/" to the filename for proper S3 structure
-      const thumbnailFile: MediaFile = {
-        ...fileWithThumbnail.thumbnail,
-        filename: `thumbnail/${fileWithThumbnail.thumbnail.filename}`,
-      };
-
-      thumbnailUploadConfig = await this.createSingleMultipartUpload(
-        thumbnailFile,
+      // Use fixed filename "thumbnail.jpg" for thumbnails
+      // Thumbnails go in their own directory: userId/thumbnails/fileId/thumbnail.jpg
+      thumbnailUploadConfig = await this.createThumbnailMultipartUpload(
+        fileWithThumbnail.thumbnail,
         userId,
-        fileId // Use the SAME fileId so they're in the same directory
+        fileId
       );
     }
 
@@ -133,6 +131,87 @@ export class S3Service {
       main: mainUploadConfig,
       thumbnail: thumbnailUploadConfig,
     };
+  }
+
+  /**
+   * Create a multipart upload for a thumbnail file
+   * Thumbnails are stored in: userId/thumbnails/fileId/thumbnail.jpg
+   */
+  private async createThumbnailMultipartUpload(
+    file: MediaFile,
+    userId: string,
+    fileId: string
+  ): Promise<UploadConfiguration> {
+    // Thumbnail S3 key: userId/thumbnails/fileId/thumbnail.jpg
+    const s3Key = `${userId}/thumbnails/${fileId}/thumbnail.jpg`;
+
+    logger.debug('Initiating thumbnail multipart upload', {
+      fileId,
+      s3Key,
+      filename: file.filename,
+    });
+
+    try {
+      // Create multipart upload in S3
+      const createCommand = new CreateMultipartUploadCommand({
+        Bucket: s3Config.bucketName,
+        Key: s3Key,
+        ContentType: file.fileType,
+        Metadata: {
+          userId,
+          fileId,
+          originalFilename: 'thumbnail.jpg',
+          uploadedAt: new Date().toISOString(),
+        },
+        // Server-side encryption (recommended)
+        ServerSideEncryption: 'AES256',
+      });
+
+      const createResponse = await this.s3Client.send(createCommand);
+
+      if (!createResponse.UploadId) {
+        throw new Error('S3 did not return an UploadId');
+      }
+
+      // Calculate number of parts needed
+      const partCount = this.calculatePartCount(file.fileSize);
+
+      // Generate presigned URLs for all parts
+      const parts = await this.generatePresignedUrls(
+        s3Key,
+        createResponse.UploadId,
+        partCount
+      );
+
+      // Calculate expiration time
+      const expiresAt = new Date(
+        Date.now() + s3Config.presignedUrlExpiry * 1000
+      ).toISOString();
+
+      const uploadConfig: UploadConfiguration = {
+        fileId,
+        s3Key,
+        bucket: s3Config.bucketName,
+        uploadId: createResponse.UploadId,
+        parts,
+        filename: 'thumbnail.jpg',
+        fileType: file.fileType,
+        expiresAt,
+      };
+
+      logger.info('Thumbnail multipart upload created', {
+        fileId,
+        uploadId: createResponse.UploadId,
+        partCount,
+      });
+
+      return uploadConfig;
+    } catch (error) {
+      logger.error('Failed to create thumbnail multipart upload', error, {
+        filename: file.filename,
+      });
+      throw error;
+    }
   }
 
   /**
@@ -217,24 +296,32 @@ export class S3Service {
 
   /**
    * Determine media type prefix from MIME type
-   * - visual: for images and videos
-   * - audio: for audio files
+   * - videos: for video files
+   * - images: for image files
+   * - audios: for audio files
    */
-  private getMediaTypePrefix(mimeType: string): 'visual' | 'audio' {
+  private getMediaTypePrefix(mimeType: string): MediaTypeStorage {
     const normalizedMimeType = mimeType.toLowerCase().trim();
 
-    if (normalizedMimeType.startsWith('audio/')) {
-      return 'audio';
+    if (normalizedMimeType.startsWith('video/')) {
+      return 'videos';
     }
 
-    // video/ and image/ both map to 'visual'
-    // Default to 'visual' for any other types
-    return 'visual';
+    if (normalizedMimeType.startsWith('image/')) {
+      return 'images';
+    }
+
+    if (normalizedMimeType.startsWith('audio/')) {
+      return 'audios';
+    }
+
+    // Default to 'videos' for any other types
+    return 'videos';
   }
 
   /**
    * Generate S3 key following naming convention
-   * Pattern: {prefix}/{userId}/{mediaType}/{year}/{month}/{day}/{fileId}/{sanitizedFilename}
+   * Pattern: {userId}/{mediaType}/{fileId}/{sanitizedFilename}
    */
   private generateS3Key(
     userId: string,
@@ -242,18 +329,13 @@ export class S3Service {
     filename: string,
     mimeType: string
   ): string {
-    const now = new Date();
-    const year = now.getUTCFullYear();
-    const month = String(now.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(now.getUTCDate()).padStart(2, '0');
-
-    // Get media type prefix (visual or audio)
+    // Get media type prefix (videos, images, or audios)
     const mediaType = this.getMediaTypePrefix(mimeType);
 
     // Sanitize filename for S3
     const sanitizedFilename = this.sanitizeFilename(filename);
 
-    return `${s3Config.keyPrefix}/${userId}/${mediaType}/${year}/${month}/${day}/${fileId}/${sanitizedFilename}`;
+    return `${userId}/${mediaType}/${fileId}/${sanitizedFilename}`;
   }
 
   /**
@@ -499,14 +581,14 @@ export class S3Service {
 
   /**
    * Extract user ID from S3 key
-   * S3 key format: {prefix}/{userId}/{mediaType}/{year}/{month}/{day}/{fileId}/{filename}
+   * S3 key format: {userId}/{mediaType}/{fileId}/{filename}
    */
   extractUserIdFromS3Key(s3Key: string): string | null {
     try {
       const parts = s3Key.split('/');
-      // Expected format: uploads/userId/mediaType/year/month/day/fileId/filename
-      if (parts.length >= 2) {
-        return parts[1]; // userId is at index 1
+      // Expected format: userId/mediaType/fileId/filename
+      if (parts.length >= 1) {
+        return parts[0]; // userId is at index 0
       }
       return null;
     } catch (error) {
@@ -536,6 +618,7 @@ export class S3Service {
 
   /**
    * List media files for a user with optional filtering and pagination
+   * Supports single-prefix (videos, images, audios) and multi-prefix (visual, all) queries
    */
   async listMediaFiles(params: ListMediaQueryParams): Promise<{
     files: MediaFileInfo[];
@@ -544,77 +627,25 @@ export class S3Service {
   }> {
     const { userId, mediaType, limit = 50, continuationToken } = params;
 
-    // Build S3 prefix based on parameters
-    let prefix = `${s3Config.keyPrefix}/${userId}/`;
-    if (mediaType) {
-      prefix += `${mediaType}/`;
-    }
+    // Get storage prefixes to query based on filter
+    const prefixes = this.getStoragePrefixes(mediaType);
+    const isSinglePrefix = prefixes.length === 1;
 
     logger.info('Listing media files', {
       userId,
       mediaType,
-      prefix,
+      prefixes,
       limit,
     });
 
     try {
-      const command = new ListObjectsV2Command({
-        Bucket: s3Config.bucketName,
-        Prefix: prefix,
-        MaxKeys: limit,
-        ContinuationToken: continuationToken,
-      });
-
-      const response = await this.s3Client.send(command);
-
-      // Transform S3 objects to MediaFileInfo with presigned URLs
-      // Filter out thumbnail paths - we only want original files
-      const filePromises = (response.Contents || [])
-        .filter((obj) => {
-          const fileKey = obj.Key || '';
-          return !this.isThumbnailPath(fileKey);
-        })
-        .map(async (obj) => {
-          const fileKey = obj.Key || '';
-          const filename = this.extractFilenameFromKey(fileKey);
-          const extractedMediaType = this.extractMediaTypeFromKey(fileKey);
-
-          // Generate presigned GET URL for the file
-          const url = await this.generatePresignedGetUrl(fileKey);
-
-          // Generate thumbnail URL for visual media (only if thumbnail exists)
-          let thumbnailUrl: string | null = null;
-          if (this.requiresThumbnail(extractedMediaType)) {
-            const thumbnailKey = this.getThumbnailKey(fileKey);
-            const thumbnailExists = await this.checkFileExists(thumbnailKey);
-            if (thumbnailExists) {
-              thumbnailUrl = await this.generatePresignedGetUrl(thumbnailKey);
-            }
-          }
-
-          return {
-            fileKey,
-            filename,
-            mediaType: extractedMediaType,
-            size: obj.Size || 0,
-            uploadedAt: obj.LastModified?.toISOString() || new Date().toISOString(),
-            url,
-            thumbnailUrl,
-          };
-        });
-
-      const files = await Promise.all(filePromises);
-
-      logger.info('Media files listed successfully', {
-        count: files.length,
-        hasMore: response.IsTruncated || false,
-      });
-
-      return {
-        files,
-        hasMore: response.IsTruncated || false,
-        nextToken: response.NextContinuationToken,
-      };
+      if (isSinglePrefix) {
+        // Single prefix: use standard S3 pagination
+        return await this.listSinglePrefix(userId, prefixes[0], limit, continuationToken);
+      } else {
+        // Multi-prefix: use composite token pagination
+        return await this.listMultiplePrefixes(userId, prefixes, limit, continuationToken);
+      }
     } catch (error) {
       logger.error('Failed to list media files', error, { userId, mediaType });
       throw new S3ServiceError('Failed to list media files from S3', {
@@ -625,8 +656,150 @@ export class S3Service {
   }
 
   /**
+   * List files from a single S3 prefix with standard pagination
+   */
+  private async listSinglePrefix(
+    userId: string,
+    mediaType: MediaTypeStorage,
+    limit: number,
+    continuationToken?: string
+  ): Promise<{ files: MediaFileInfo[]; hasMore: boolean; nextToken?: string }> {
+    const prefix = `${userId}/${mediaType}/`;
+
+    const command = new ListObjectsV2Command({
+      Bucket: s3Config.bucketName,
+      Prefix: prefix,
+      MaxKeys: limit,
+      ContinuationToken: continuationToken,
+    });
+
+    const response = await this.s3Client.send(command);
+    const files = await this.transformS3Objects(response.Contents || []);
+
+    return {
+      files,
+      hasMore: response.IsTruncated || false,
+      nextToken: response.NextContinuationToken,
+    };
+  }
+
+  /**
+   * List files from multiple S3 prefixes with composite token pagination
+   */
+  private async listMultiplePrefixes(
+    userId: string,
+    prefixes: MediaTypeStorage[],
+    limit: number,
+    continuationToken?: string
+  ): Promise<{ files: MediaFileInfo[]; hasMore: boolean; nextToken?: string }> {
+    // Decode composite token or start fresh
+    const tokens = continuationToken ? this.decodeCompositeToken(continuationToken) : {};
+
+    // Query each prefix in parallel
+    const prefixResults = await Promise.all(
+      prefixes.map(async (mediaType) => {
+        const prefix = `${userId}/${mediaType}/`;
+        const token = tokens[mediaType] ?? undefined;
+
+        // Skip if this prefix is exhausted (token explicitly set to null)
+        if (tokens[mediaType] === null) {
+          return { mediaType, contents: [], hasMore: false, nextToken: undefined };
+        }
+
+        const command = new ListObjectsV2Command({
+          Bucket: s3Config.bucketName,
+          Prefix: prefix,
+          MaxKeys: limit,
+          ContinuationToken: token,
+        });
+
+        const response = await this.s3Client.send(command);
+        return {
+          mediaType,
+          contents: response.Contents || [],
+          hasMore: response.IsTruncated || false,
+          nextToken: response.NextContinuationToken,
+        };
+      })
+    );
+
+    // Combine all contents and transform to MediaFileInfo
+    const allContents = prefixResults.flatMap((r) => r.contents);
+    const allFiles = await this.transformS3Objects(allContents);
+
+    // Sort by uploadedAt descending
+    allFiles.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+
+    // Take only the requested limit
+    const paginatedFiles = allFiles.slice(0, limit);
+
+    // Build new composite token
+    const newTokens: Record<string, string | null> = {};
+    let anyHasMore = false;
+
+    for (const result of prefixResults) {
+      if (result.hasMore) {
+        newTokens[result.mediaType] = result.nextToken || null;
+        anyHasMore = true;
+      } else {
+        newTokens[result.mediaType] = null; // Mark as exhausted
+      }
+    }
+
+    // Check if we have more items beyond the limit
+    const hasMoreItems = allFiles.length > limit || anyHasMore;
+
+    return {
+      files: paginatedFiles,
+      hasMore: hasMoreItems,
+      nextToken: hasMoreItems ? this.encodeCompositeToken(newTokens) : undefined,
+    };
+  }
+
+  /**
+   * Transform S3 objects to MediaFileInfo with presigned URLs
+   */
+  private async transformS3Objects(contents: { Key?: string; Size?: number; LastModified?: Date }[]): Promise<MediaFileInfo[]> {
+    const filePromises = contents
+      .filter((obj) => {
+        const fileKey = obj.Key || '';
+        return !this.isThumbnailPath(fileKey);
+      })
+      .map(async (obj) => {
+        const fileKey = obj.Key || '';
+        const filename = this.extractFilenameFromKey(fileKey);
+        const extractedMediaType = this.extractMediaTypeFromKey(fileKey);
+
+        // Generate presigned GET URL for the file
+        const url = await this.generatePresignedGetUrl(fileKey);
+
+        // Generate thumbnail URL for videos only (if thumbnail exists)
+        let thumbnailUrl: string | null = null;
+        if (this.requiresThumbnail(extractedMediaType)) {
+          const thumbnailKey = this.getThumbnailKey(fileKey);
+          const thumbnailExists = await this.checkFileExists(thumbnailKey);
+          if (thumbnailExists) {
+            thumbnailUrl = await this.generatePresignedGetUrl(thumbnailKey);
+          }
+        }
+
+        return {
+          fileKey,
+          filename,
+          mediaType: extractedMediaType,
+          size: obj.Size || 0,
+          uploadedAt: obj.LastModified?.toISOString() || new Date().toISOString(),
+          url,
+          thumbnailUrl,
+        };
+      });
+
+    return Promise.all(filePromises);
+  }
+
+  /**
    * Extract filename from S3 key
-   * S3 key format: uploads/userId/mediaType/year/month/day/fileId/filename
+   * S3 key format: {userId}/{mediaType}/{fileId}/{filename}
    */
   private extractFilenameFromKey(s3Key: string): string {
     const parts = s3Key.split('/');
@@ -635,51 +808,88 @@ export class S3Service {
 
   /**
    * Extract media type from S3 key
-   * S3 key format: uploads/userId/mediaType/year/month/day/fileId/filename
+   * S3 key format: {userId}/{mediaType}/{fileId}/{filename}
    */
-  private extractMediaTypeFromKey(s3Key: string): 'visual' | 'audio' {
+  private extractMediaTypeFromKey(s3Key: string): MediaTypeStorage {
     const parts = s3Key.split('/');
-    // mediaType is at index 2: uploads/userId/mediaType/...
-    if (parts.length >= 3) {
-      const mediaType = parts[2];
-      if (mediaType === 'audio') {
-        return 'audio';
+    // mediaType is at index 1: userId/mediaType/fileId/filename
+    if (parts.length >= 2) {
+      const mediaType = parts[1];
+      if (mediaType === 'videos' || mediaType === 'images' || mediaType === 'audios') {
+        return mediaType;
       }
     }
-    return 'visual'; // Default to visual
+    return 'videos'; // Default to videos
   }
 
   /**
    * Generate thumbnail S3 key from original file key
-   * Original: uploads/user123/visual/2025/11/18/abc-123/video.mp4
-   * Thumbnail: uploads/user123/visual/2025/11/18/abc-123/thumbnail/video.jpg
+   * Original: user123/videos/abc-123/video.mp4
+   * Thumbnail: user123/thumbnails/abc-123/thumbnail.jpg
    */
   private getThumbnailKey(originalKey: string): string {
-    const lastSlash = originalKey.lastIndexOf('/');
-    const directory = originalKey.substring(0, lastSlash);
-    const filename = originalKey.substring(lastSlash + 1);
+    // Parse the original key: userId/mediaType/fileId/filename
+    const parts = originalKey.split('/');
+    if (parts.length < 4) {
+      // Fallback for unexpected format
+      const lastSlash = originalKey.lastIndexOf('/');
+      const directory = originalKey.substring(0, lastSlash);
+      return `${directory}/thumbnail.jpg`;
+    }
 
-    // Remove file extension and add .jpg
-    const lastDot = filename.lastIndexOf('.');
-    const nameWithoutExt = lastDot > 0 ? filename.substring(0, lastDot) : filename;
+    const userId = parts[0];
+    const fileId = parts[2];
 
-    return `${directory}/thumbnail/${nameWithoutExt}.jpg`;
+    // Thumbnail path: userId/thumbnails/fileId/thumbnail.jpg
+    return `${userId}/thumbnails/${fileId}/thumbnail.jpg`;
   }
 
   /**
    * Check if S3 key is a thumbnail path
+   * Thumbnails are stored in: userId/thumbnails/fileId/thumbnail.jpg
    */
   private isThumbnailPath(key: string): boolean {
-    return key.includes('/thumbnail/');
+    // Check if the path contains /thumbnails/ directory
+    return key.includes('/thumbnails/') || key.endsWith('/thumbnail.jpg');
   }
 
   /**
    * Check if media type requires a thumbnail
-   * Visual media (videos and images) require thumbnails
-   * Audio media does not require thumbnails
+   * Only videos require thumbnails
    */
-  private requiresThumbnail(mediaType: 'visual' | 'audio'): boolean {
-    return mediaType === 'visual';
+  private requiresThumbnail(mediaType: MediaTypeStorage): boolean {
+    return mediaType === 'videos';
+  }
+
+  /**
+   * Get storage prefixes to query based on filter type
+   */
+  private getStoragePrefixes(filter?: MediaTypeFilter): MediaTypeStorage[] {
+    if (!filter) {
+      return ['videos', 'images', 'audios'];
+    }
+    if (filter === 'visual') {
+      return ['videos', 'images'];
+    }
+    return [filter as MediaTypeStorage];
+  }
+
+  /**
+   * Encode composite pagination token for multi-prefix queries
+   */
+  private encodeCompositeToken(tokens: Record<string, string | null>): string {
+    return Buffer.from(JSON.stringify(tokens)).toString('base64');
+  }
+
+  /**
+   * Decode composite pagination token
+   */
+  private decodeCompositeToken(token: string): Record<string, string | null> {
+    try {
+      return JSON.parse(Buffer.from(token, 'base64').toString('utf-8'));
+    } catch {
+      return {};
+    }
   }
 
   /**
@@ -765,7 +975,7 @@ export class S3Service {
 
   /**
    * Rename a media file in S3 by copying to new key and deleting old key
-   * Also renames thumbnails for visual media
+   * Note: Thumbnails don't need to be renamed since they're stored by fileId, not filename
    */
   async renameMediaFile(oldKey: string, newFilename: string): Promise<RenameMediaData> {
     logger.info('Renaming media file', { oldKey, newFilename });
@@ -815,27 +1025,15 @@ export class S3Service {
       await this.s3Client.send(copyCommand);
       logger.debug('File copied successfully', { oldKey, newKey });
 
-      // If visual media, also copy the thumbnail (CRITICAL operation)
-      if (this.requiresThumbnail(mediaType)) {
-        const oldThumbnailKey = this.getThumbnailKey(oldKey);
-        const newThumbnailKey = this.getThumbnailKey(newKey);
+      // Note: Thumbnails are stored by fileId (userId/thumbnails/fileId/thumbnail.jpg)
+      // so they don't need to be copied/moved when renaming the main file
 
-        logger.debug('Copying thumbnail', { oldThumbnailKey, newThumbnailKey });
-
-        const copyThumbnailCommand = new CopyObjectCommand({
-          Bucket: s3Config.bucketName,
-          CopySource: `${s3Config.bucketName}/${oldThumbnailKey}`,
-          Key: newThumbnailKey,
-          ContentType: 'image/jpeg',
-          ServerSideEncryption: 'AES256',
-        });
-
-        await this.s3Client.send(copyThumbnailCommand);
-        logger.debug('Thumbnail copied successfully', { oldThumbnailKey, newThumbnailKey });
-      }
-
-      // Delete old file only after successful copy (this will also delete thumbnail for visual media)
-      await this.deleteSingleFile(oldKey);
+      // Delete old main file only (not thumbnail - it's stored separately by fileId)
+      const deleteCommand = new DeleteObjectCommand({
+        Bucket: s3Config.bucketName,
+        Key: oldKey,
+      });
+      await this.s3Client.send(deleteCommand);
 
       logger.info('File renamed successfully', { oldKey, newKey });
 
@@ -899,54 +1097,44 @@ export class S3Service {
 
   /**
    * Search media files by partial filename match
-   * Supports searching across all media types or filtering by visual/audio
+   * Supports searching across all media types or filtering by videos/images/audios/visual
    */
   async searchMediaFiles(params: SearchMediaQueryParams): Promise<{
     files: MediaFileInfo[];
     hasMore: boolean;
     nextToken?: string;
   }> {
-    const { userId, query, mediaType, limit = 50, continuationToken } = params;
+    const { userId, query, mediaType, limit = 50 } = params;
 
     // Normalize search query to lowercase for case-insensitive matching
     const searchQuery = query.trim().toLowerCase();
+
+    // Get storage prefixes to query based on filter
+    const prefixes = this.getStoragePrefixes(mediaType);
 
     logger.info('Searching media files', {
       userId,
       query: searchQuery,
       mediaType,
+      prefixes,
       limit,
     });
 
     try {
-      let allFiles: MediaFileInfo[] = [];
+      // Search all applicable prefixes in parallel
+      const searchResults = await Promise.all(
+        prefixes.map((prefix) => this.listAndFilterFiles(`${userId}/${prefix}/`, searchQuery))
+      );
 
-      if (mediaType) {
-        // Search only in specific media type
-        const prefix = `${s3Config.keyPrefix}/${userId}/${mediaType}/`;
-        const files = await this.listAndFilterFiles(prefix, searchQuery, continuationToken);
-        allFiles = files;
-      } else {
-        // Search in both visual and audio
-        const visualPrefix = `${s3Config.keyPrefix}/${userId}/visual/`;
-        const audioPrefix = `${s3Config.keyPrefix}/${userId}/audio/`;
+      // Combine results
+      let allFiles = searchResults.flat();
 
-        // List from both prefixes
-        const [visualFiles, audioFiles] = await Promise.all([
-          this.listAndFilterFiles(visualPrefix, searchQuery),
-          this.listAndFilterFiles(audioPrefix, searchQuery),
-        ]);
-
-        // Combine results
-        allFiles = [...visualFiles, ...audioFiles];
-
-        // Sort by upload date (most recent first)
-        allFiles.sort((a, b) => {
-          const dateA = new Date(a.uploadedAt).getTime();
-          const dateB = new Date(b.uploadedAt).getTime();
-          return dateB - dateA;
-        });
-      }
+      // Sort by upload date (most recent first)
+      allFiles.sort((a, b) => {
+        const dateA = new Date(a.uploadedAt).getTime();
+        const dateB = new Date(b.uploadedAt).getTime();
+        return dateB - dateA;
+      });
 
       // Apply limit and pagination
       const hasMore = allFiles.length > limit;

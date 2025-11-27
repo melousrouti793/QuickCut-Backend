@@ -54,11 +54,11 @@ const USER_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 /**
  * S3 key pattern for validation
- * Format: uploads/{userId}/{mediaType}/{year}/{month}/{day}/{fileId}/{filename}
- * OR: uploads/{userId}/{mediaType}/{year}/{month}/{day}/{fileId}/thumbnail/{filename}
+ * Format: {userId}/{mediaType}/{fileId}/{filename}
+ * OR: {userId}/videos/{fileId}/thumbnail.jpg (for video thumbnails)
  */
 const S3_KEY_PATTERN =
-  /^uploads\/[a-zA-Z0-9_-]+\/(visual|audio)\/\d{4}\/\d{2}\/\d{2}\/[a-zA-Z0-9-]+\/(thumbnail\/)?[a-zA-Z0-9_\-\. ]+$/;
+  /^[a-zA-Z0-9_-]+\/(videos|images|audios)\/[a-zA-Z0-9-]+\/([a-zA-Z0-9_\-\. ]+|thumbnail\.jpg)$/;
 
 /**
  * Path traversal patterns to detect and block
@@ -214,23 +214,18 @@ export function validateFileKey(fileKey: string): void {
   if (!S3_KEY_PATTERN.test(trimmedKey)) {
     throw new Error('File key does not match expected format');
   }
-
-  // Must start with expected prefix
-  if (!trimmedKey.startsWith('uploads/')) {
-    throw new Error('File key must start with "uploads/" prefix');
-  }
 }
 
 /**
  * Extract userId from S3 file key
- * Format: uploads/{userId}/{mediaType}/{year}/{month}/{day}/{fileId}/{filename}
+ * Format: {userId}/{mediaType}/{fileId}/{filename}
  */
 export function extractUserIdFromKey(fileKey: string): string | null {
   try {
     const parts = fileKey.split('/');
-    // Expected format: uploads/userId/mediaType/...
-    if (parts.length >= 2 && parts[0] === 'uploads') {
-      return parts[1];
+    // Expected format: userId/mediaType/fileId/filename
+    if (parts.length >= 1) {
+      return parts[0];
     }
     return null;
   } catch (error) {

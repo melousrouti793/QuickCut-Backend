@@ -10,6 +10,7 @@ import {
   ErrorResponse,
   HttpStatus,
   SearchMediaQueryParams,
+  MediaTypeFilter,
 } from '../types';
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
@@ -52,7 +53,7 @@ export async function handler(
     const searchParams: SearchMediaQueryParams = {
       userId,
       query: queryParams.query,
-      mediaType: queryParams.mediaType as 'visual' | 'audio' | undefined,
+      mediaType: queryParams.mediaType as MediaTypeFilter | undefined,
       limit: queryParams.limit ? parseInt(queryParams.limit, 10) : 50,
       continuationToken: queryParams.continuationToken,
     };

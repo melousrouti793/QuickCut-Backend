@@ -490,6 +490,11 @@ export class ValidationService {
   }
 
   /**
+   * Valid media type filter values for query parameters
+   */
+  private static readonly VALID_MEDIA_TYPE_FILTERS = ['visual', 'videos', 'images', 'audios'];
+
+  /**
    * Validate list media query parameters
    */
   validateListMediaQueryParams(params: {
@@ -501,8 +506,8 @@ export class ValidationService {
 
     // Validate mediaType (optional)
     if (params.mediaType) {
-      if (params.mediaType !== 'visual' && params.mediaType !== 'audio') {
-        errors.push('mediaType must be either "visual" or "audio"');
+      if (!ValidationService.VALID_MEDIA_TYPE_FILTERS.includes(params.mediaType)) {
+        errors.push('mediaType must be "visual", "videos", "images", or "audios"');
       }
     }
 
@@ -686,8 +691,8 @@ export class ValidationService {
 
     // Validate mediaType (optional)
     if (params.mediaType) {
-      if (params.mediaType !== 'visual' && params.mediaType !== 'audio') {
-        errors.push('mediaType must be either "visual" or "audio"');
+      if (!ValidationService.VALID_MEDIA_TYPE_FILTERS.includes(params.mediaType)) {
+        errors.push('mediaType must be "visual", "videos", "images", or "audios"');
       }
     }
 

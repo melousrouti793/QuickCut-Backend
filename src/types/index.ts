@@ -3,6 +3,16 @@
  */
 
 // ============================================================================
+// Media Type Definitions
+// ============================================================================
+
+/** Media types as stored in S3 paths: videos, images, or audios */
+export type MediaTypeStorage = 'videos' | 'images' | 'audios';
+
+/** Media type filter options for queries - includes 'visual' aggregate for videos + images */
+export type MediaTypeFilter = 'visual' | 'videos' | 'images' | 'audios';
+
+// ============================================================================
 // Request Types
 // ============================================================================
 
@@ -18,7 +28,7 @@ export interface MediaFile {
 export interface MediaFileWithThumbnail {
   /** Main file (video, image, or audio) */
   main: MediaFile;
-  /** Optional thumbnail (only for visual media like videos) */
+  /** Optional thumbnail (only for videos) */
   thumbnail?: MediaFile;
 }
 
@@ -48,8 +58,8 @@ export interface CompleteUploadRequest {
 export interface ListMediaQueryParams {
   /** User ID from authorizer context */
   userId: string;
-  /** Filter by media type (visual or audio) */
-  mediaType?: 'visual' | 'audio';
+  /** Filter by media type (visual, videos, images, or audios) */
+  mediaType?: MediaTypeFilter;
   /** Number of items per page (default: 50, max: 1000) */
   limit?: number;
   /** Continuation token for pagination */
@@ -146,15 +156,15 @@ export interface MediaFileInfo {
   fileKey: string;
   /** Original filename */
   filename: string;
-  /** Media type (visual or audio) */
-  mediaType: 'visual' | 'audio';
+  /** Media type (videos, images, or audios) */
+  mediaType: MediaTypeStorage;
   /** File size in bytes */
   size: number;
   /** Upload timestamp */
   uploadedAt: string;
   /** S3 URL for the file */
   url: string;
-  /** Presigned URL for thumbnail (always present for visual media, null for audio) */
+  /** Presigned URL for thumbnail (present for videos, null for images/audios) */
   thumbnailUrl: string | null;
 }
 
@@ -314,7 +324,7 @@ export interface RenameMediaData {
   filename: string;
   /** Presigned URL for the renamed file */
   url: string;
-  /** Presigned URL for thumbnail (present for visual media, null for audio) */
+  /** Presigned URL for thumbnail (present for videos, null for images/audios) */
   thumbnailUrl: string | null;
 }
 
@@ -336,8 +346,8 @@ export interface SearchMediaQueryParams {
   userId: string;
   /** Search query string (partial filename to search for) */
   query: string;
-  /** Filter by media type (visual or audio), omit for both */
-  mediaType?: 'visual' | 'audio';
+  /** Filter by media type (visual, videos, images, or audios), omit for all */
+  mediaType?: MediaTypeFilter;
   /** Number of items per page (default: 50, max: 1000) */
   limit?: number;
   /** Continuation token for pagination */
@@ -348,7 +358,7 @@ export interface SearchMediaData {
   /** Search query that was used */
   query: string;
   /** Media type filter applied (if any) */
-  mediaType?: 'visual' | 'audio';
+  mediaType?: MediaTypeFilter;
   /** List of matching media files */
   files: MediaFileInfo[];
   /** Number of files returned */
