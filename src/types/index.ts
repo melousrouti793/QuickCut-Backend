@@ -237,6 +237,53 @@ export interface RateLimitConfig {
   windowSeconds: number;
 }
 
+export interface DynamoDBConfig {
+  /** DynamoDB table name */
+  tableName: string;
+  /** AWS region */
+  region: string;
+}
+
+// ============================================================================
+// DynamoDB Media Index Types
+// ============================================================================
+
+/** Media processing status */
+export type MediaStatus = 'processing' | 'ready' | 'failed';
+
+/** Media type for DynamoDB records (singular form) */
+export type MediaType = 'video' | 'image' | 'audio';
+
+/** DynamoDB media item record */
+export interface MediaItem {
+  /** Partition key: USER#<userId> */
+  PK: string;
+  /** Sort key: MEDIA#<mediaId> */
+  SK: string;
+  /** Entity type identifier */
+  entityType: 'MEDIA';
+  /** Unique media identifier (same as fileId from upload) */
+  mediaId: string;
+  /** Media type: video, image, or audio */
+  mediaType: MediaType;
+  /** Original filename */
+  filename: string;
+  /** MIME type */
+  mimeType: string;
+  /** File size in bytes */
+  sizeBytes: number;
+  /** S3 key for the main file */
+  s3Key: string;
+  /** S3 key for thumbnail (videos only, null for images/audio) */
+  thumbnailS3Key: string | null;
+  /** Processing status */
+  status: MediaStatus;
+  /** Creation timestamp (ISO 8601) */
+  createdAt: string;
+  /** Last update timestamp (ISO 8601) */
+  updatedAt: string;
+}
+
 // ============================================================================
 // Internal Types
 // ============================================================================

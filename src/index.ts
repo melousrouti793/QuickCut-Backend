@@ -10,5 +10,8 @@ export { handler } from './handlers/router.handler';
 export { handler as uploadHandler } from './handlers/upload.handler';
 export { handler as completeHandler } from './handlers/complete.handler';
 
+// Service exports (for testing)
+export { dynamoDBService } from './services/dynamodb.service';
+
 // Export types for potential client SDK generation
 export * from './types';

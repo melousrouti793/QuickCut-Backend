@@ -9,6 +9,7 @@ import { UploadRequest, SuccessResponse, ErrorResponse, HttpStatus } from '../ty
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
 import { s3Service } from '../services/s3.service';
+import { dynamoDBService } from '../services/dynamodb.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
 import { getAuthenticatedUserId } from '../utils/auth';
@@ -47,6 +48,13 @@ export async function handler(
     const uploadConfigs = await s3Service.createMultipartUploads(
       request.files,
       userId
+    );
+
+    // Create DynamoDB records for media index
+    await dynamoDBService.createMediaRecords(
+      userId,
+      uploadConfigs,
+      request.files
     );
 
     // Build success response

@@ -94,6 +94,23 @@ export class S3ServiceError extends AppError {
 }
 
 /**
+ * DynamoDB service error (500)
+ */
+export class DynamoDBServiceError extends AppError {
+  constructor(
+    message: string = 'DynamoDB service error occurred',
+    details?: Record<string, unknown>
+  ) {
+    super(
+      HttpStatus.INTERNAL_SERVER_ERROR,
+      ErrorCode.DATABASE_ERROR,
+      message,
+      details
+    );
+  }
+}
+
+/**
  * Generic internal server error (500)
  */
 export class InternalServerError extends AppError {

@@ -3,7 +3,7 @@
  * Centralizes all environment variables and application settings
  */
 
-import { S3Config, ValidationConfig, RateLimitConfig } from '../types';
+import { S3Config, ValidationConfig, RateLimitConfig, DynamoDBConfig } from '../types';
 
 /**
  * Get required environment variable or throw error
@@ -49,6 +49,15 @@ export const s3Config: S3Config = {
 };
 
 // ============================================================================
+// DynamoDB Configuration
+// ============================================================================
+
+export const dynamoDBConfig: DynamoDBConfig = {
+  tableName: getEnvVar('DYNAMODB_TABLE'),
+  region: getEnvVarOptional('AWS_REGION', 'us-east-1'),
+};
+
+// ============================================================================
 // Validation Configuration
 // ============================================================================
 
@@ -59,7 +68,8 @@ export const validationConfig: ValidationConfig = {
   maxFilenameLength: getEnvVarNumber('MAX_FILENAME_LENGTH', 255),
   allowedMimeTypes: getEnvVarOptional(
     'ALLOWED_MIME_TYPES',
-    'image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime,video/x-msvideo,audio/mpeg,audio/wav'
+    // Videos: .mp4, .mov, .webm | Images: .jpg, .jpeg, .png, .webp | Audio: .mp3, .wav, .m4a, .aac
+    'video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp,audio/mpeg,audio/wav,audio/mp4,audio/x-m4a,audio/aac'
   ).split(','),
 };
 
