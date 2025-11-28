@@ -127,11 +127,27 @@ class Logger {
     if (!error) return undefined;
 
     if (error instanceof Error) {
-      return {
+      // Cast to access AppError properties
+      const appError = error as unknown as Record<string, unknown>;
+
+      const serialized: Record<string, unknown> = {
         name: error.name,
         message: error.message,
         stack: appConfig.enableDetailedErrors ? error.stack : undefined,
       };
+
+      // Include AppError-specific properties for debugging
+      if (appError.details !== undefined) {
+        serialized.details = appError.details;
+      }
+      if (appError.statusCode !== undefined) {
+        serialized.statusCode = appError.statusCode;
+      }
+      if (appError.errorCode !== undefined) {
+        serialized.errorCode = appError.errorCode;
+      }
+
+      return serialized;
     }
 
     return { error: String(error) };

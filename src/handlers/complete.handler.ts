@@ -152,7 +152,7 @@ function handleError(
       statusCode: error.statusCode,
       errorCode: error.errorCode,
       message: error.message,
-      details: error.details,
+      // Don't expose internal details to clients - they're logged to CloudWatch
       requestId,
     };
 
