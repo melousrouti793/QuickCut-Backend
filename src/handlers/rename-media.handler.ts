@@ -50,31 +50,48 @@ export async function handler(
     const userId = getAuthenticatedUserId(event);
     logger.setContext({ userId });
 
-    // Parse request body
+    // Step 1: Parse request body
+    logger.info('Step 1: Parsing rename request');
     const request = parseRequestBody(event);
+    logger.info('Step 1: Request parsed', {
+      mediaId: request.mediaId,
+      newFilename: request.newFilename,
+    });
 
-    // Validate request (with authenticated userId for authorization checks)
+    // Step 2: Validate request (with authenticated userId for authorization checks)
+    logger.info('Step 2: Validating rename request', { mediaId: request.mediaId });
     validationService.validateRenameMediaRequest({ ...request, userId });
+    logger.info('Step 2: Validation passed');
 
     // Sanitize new filename (validation already checked it's valid)
     const sanitizedFilename = sanitizeFilename(request.newFilename);
 
-    logger.info('Renaming media file', {
-      userId,
+    // Step 3: Get existing record to verify ownership and get s3Key
+    logger.info('Step 3: Fetching existing media record', { mediaId: request.mediaId });
+    const mediaItem = await dynamoDBService.getMediaItem(userId, request.mediaId);
+    if (!mediaItem) {
+      logger.warn('Media not found for rename', { mediaId: request.mediaId, userId });
+      throw new AppError(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, 'Media not found');
+    }
+    logger.info('Step 3: Media record fetched', {
+      mediaId: request.mediaId,
+      mediaType: mediaItem.mediaType,
+      currentFilename: mediaItem.filename,
+    });
+
+    // Step 4: Update filename in DynamoDB only (no S3 changes)
+    logger.info('Step 4: Updating filename in DynamoDB', {
       mediaId: request.mediaId,
       newFilename: sanitizedFilename,
     });
-
-    // Get existing record to verify ownership and get s3Key
-    const mediaItem = await dynamoDBService.getMediaItem(userId, request.mediaId);
-    if (!mediaItem) {
-      throw new AppError(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, 'Media not found');
-    }
-
-    // Update filename in DynamoDB only (no S3 changes)
     await dynamoDBService.updateMediaFilename(userId, request.mediaId, sanitizedFilename);
+    logger.info('Step 4: Filename updated in DynamoDB');
 
-    // Build type-specific response data
+    // Step 5: Build type-specific response data
+    logger.info('Step 5: Building response with updated metadata', {
+      mediaId: request.mediaId,
+      mediaType: mediaItem.mediaType,
+    });
     const responseData = await buildRenameResponseData(mediaItem, sanitizedFilename);
 
     // Build success response

@@ -42,24 +42,45 @@ export async function handler(
     const userId = getAuthenticatedUserId(event);
     logger.setContext({ userId });
 
-    // Parse request body
+    // Step 1: Parse request body
+    logger.info('Step 1: Parsing complete upload request');
     const request = parseRequestBody(event);
+    logger.info('Step 1: Request parsed', {
+      fileId: request.fileId,
+      partCount: request.parts.length,
+    });
 
-    // Validate completion request
+    // Step 2: Validate completion request
+    logger.info('Step 2: Validating complete upload request', {
+      fileId: request.fileId,
+      partCount: request.parts.length,
+    });
     validationService.validateCompleteUploadRequest(request);
+    logger.info('Step 2: Validation passed');
 
-    // Complete the multipart upload
+    // Step 3: Complete the multipart upload
+    logger.info('Step 3: Completing S3 multipart upload', {
+      fileId: request.fileId,
+      s3Key: request.s3Key,
+      uploadId: request.uploadId,
+      partCount: request.parts.length,
+    });
     const completedUpload = await s3Service.completeMultipartUpload(
       request.fileId,
       request.s3Key,
       request.uploadId,
       request.parts
     );
+    logger.info('Step 3: S3 multipart upload completed', {
+      fileId: request.fileId,
+      location: completedUpload.location,
+    });
 
     // Note: Status remains 'processing' until server-side processing
     // (preview/thumbnail generation) completes and sets it to 'ready'
 
-    // Build success response
+    // Step 4: Build success response
+    logger.info('Step 4: Building response', { fileId: request.fileId });
     const response: CompleteSuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'Upload completed successfully',

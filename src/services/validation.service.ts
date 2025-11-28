@@ -90,6 +90,13 @@ export class ValidationService {
 
     // Check file count limit
     if (files.length > validationConfig.maxFilesPerRequest) {
+      logger.warn('Validation failed: too many files', {
+        validationType: 'files',
+        field: 'files',
+        reason: 'exceeds maximum files per request',
+        maxAllowed: validationConfig.maxFilesPerRequest,
+        received: files.length,
+      });
       throw new ValidationError(
         `Maximum ${validationConfig.maxFilesPerRequest} files allowed per request`,
         ErrorCode.TOO_MANY_FILES,
@@ -107,6 +114,11 @@ export class ValidationService {
     });
 
     if (errors.length > 0) {
+      logger.warn('Validation failed: file validation errors', {
+        validationType: 'files',
+        errorCount: errors.length,
+        errors,
+      });
       throw new ValidationError(
         'File validation failed',
         ErrorCode.INVALID_REQUEST,
@@ -299,6 +311,11 @@ export class ValidationService {
 
     // If required fields are missing, return early
     if (errors.length > 0) {
+      logger.warn('Validation failed: complete upload missing required fields', {
+        validationType: 'completeUpload',
+        errorCount: errors.length,
+        errors,
+      });
       throw new ValidationError(
         'Complete upload validation failed',
         ErrorCode.MISSING_REQUIRED_FIELD,
@@ -327,6 +344,12 @@ export class ValidationService {
     errors.push(...partsErrors);
 
     if (errors.length > 0) {
+      logger.warn('Validation failed: complete upload validation errors', {
+        validationType: 'completeUpload',
+        fileId: request.fileId,
+        errorCount: errors.length,
+        errors,
+      });
       throw new ValidationError(
         'Complete upload validation failed',
         ErrorCode.INVALID_REQUEST,
@@ -444,6 +467,12 @@ export class ValidationService {
     // continuationToken is just a string, no specific validation needed
 
     if (errors.length > 0) {
+      logger.warn('Validation failed: list media query params', {
+        validationType: 'listMedia',
+        params,
+        errorCount: errors.length,
+        errors,
+      });
       throw new ValidationError(
         'List media validation failed',
         ErrorCode.INVALID_REQUEST,
@@ -451,7 +480,7 @@ export class ValidationService {
       );
     }
 
-    logger.debug('List media query params validation successful');
+    logger.debug('List media query params validation successful', { params });
   }
 
   /**
@@ -506,6 +535,12 @@ export class ValidationService {
     }
 
     if (errors.length > 0) {
+      logger.warn('Validation failed: delete media request', {
+        validationType: 'deleteMedia',
+        mediaIdCount: request.mediaIds?.length,
+        errorCount: errors.length,
+        errors,
+      });
       throw new ValidationError(
         'Delete media validation failed',
         ErrorCode.INVALID_REQUEST,
@@ -513,7 +548,9 @@ export class ValidationService {
       );
     }
 
-    logger.debug('Delete media request validation successful');
+    logger.debug('Delete media request validation successful', {
+      mediaIdCount: request.mediaIds.length,
+    });
   }
 
   /**
@@ -552,6 +589,12 @@ export class ValidationService {
     // The original S3 key (with original extension) remains unchanged
 
     if (errors.length > 0) {
+      logger.warn('Validation failed: rename media request', {
+        validationType: 'renameMedia',
+        mediaId: request.mediaId,
+        errorCount: errors.length,
+        errors,
+      });
       throw new ValidationError(
         'Rename media validation failed',
         ErrorCode.INVALID_REQUEST,
@@ -559,7 +602,9 @@ export class ValidationService {
       );
     }
 
-    logger.debug('Rename media request validation successful');
+    logger.debug('Rename media request validation successful', {
+      mediaId: request.mediaId,
+    });
   }
 
   /**
@@ -608,6 +653,12 @@ export class ValidationService {
     // continuationToken is just a string, no specific validation needed
 
     if (errors.length > 0) {
+      logger.warn('Validation failed: search media query params', {
+        validationType: 'searchMedia',
+        query: params.query,
+        errorCount: errors.length,
+        errors,
+      });
       throw new ValidationError(
         'Search media validation failed',
         ErrorCode.INVALID_REQUEST,
@@ -615,7 +666,10 @@ export class ValidationService {
       );
     }
 
-    logger.debug('Search media query params validation successful');
+    logger.debug('Search media query params validation successful', {
+      query: params.query,
+      mediaType: params.mediaType,
+    });
   }
 }
 

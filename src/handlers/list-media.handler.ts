@@ -49,15 +49,23 @@ export async function handler(
     const userId = getAuthenticatedUserId(event);
     logger.setContext({ userId });
 
-    // Parse query parameters
+    // Step 1: Parse query parameters
+    logger.info('Step 1: Parsing query parameters');
     const queryParams = parseQueryParameters(event);
+    logger.info('Step 1: Query parameters parsed', {
+      mediaType: queryParams.mediaType,
+      limit: queryParams.limit,
+      hasToken: !!queryParams.continuationToken,
+    });
 
-    // Validate query parameters
+    // Step 2: Validate query parameters
+    logger.info('Step 2: Validating query parameters');
     validationService.validateListMediaQueryParams({
       mediaType: queryParams.mediaType,
       limit: queryParams.limit,
       continuationToken: queryParams.continuationToken,
     });
+    logger.info('Step 2: Validation passed');
 
     // Convert mediaType filter to DynamoDB format (singular form)
     const mediaType = convertMediaTypeFilter(queryParams.mediaType);
@@ -78,18 +86,26 @@ export async function handler(
       }
     }
 
-    // Query DynamoDB for user's media
+    // Step 3: Query DynamoDB for user's media
+    const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
+    logger.info('Step 3: Querying DynamoDB', { userId, mediaType, limit });
     const result = await dynamoDBService.getMediaByUser(userId, {
       mediaType,
       status: 'ready',
-      limit: queryParams.limit ? parseInt(queryParams.limit, 10) : 50,
+      limit,
       exclusiveStartKey,
     });
+    logger.info('Step 3: DynamoDB query completed', {
+      itemCount: result.items.length,
+      hasMore: !!result.lastEvaluatedKey,
+    });
 
-    // Generate presigned URLs and build type-specific responses
+    // Step 4: Generate presigned URLs and build type-specific responses
+    logger.info('Step 4: Generating presigned URLs', { fileCount: result.items.length });
     const files: MediaFileInfo[] = await Promise.all(
       result.items.map((item) => buildMediaFileInfo(item))
     );
+    logger.info('Step 4: Presigned URLs generated', { fileCount: files.length });
 
     // Encode next token if more results available
     let nextToken: string | undefined;
@@ -97,7 +113,11 @@ export async function handler(
       nextToken = Buffer.from(JSON.stringify(result.lastEvaluatedKey)).toString('base64');
     }
 
-    // Build success response
+    // Step 5: Build success response
+    logger.info('Step 5: Building response', {
+      fileCount: files.length,
+      hasMore: !!result.lastEvaluatedKey,
+    });
     const response: ListMediaSuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'Media files retrieved successfully',

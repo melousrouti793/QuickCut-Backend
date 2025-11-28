@@ -44,25 +44,31 @@ export async function handler(
     const userId = getAuthenticatedUserId(event);
     logger.setContext({ userId });
 
-    // Parse request body
+    // Step 1: Parse request body
+    logger.info('Step 1: Parsing delete request');
     const request = parseRequestBody(event);
+    logger.info('Step 1: Request parsed', { mediaIdCount: request.mediaIds.length });
 
-    // Validate request (with authenticated userId for authorization checks)
+    // Step 2: Validate request (with authenticated userId for authorization checks)
+    logger.info('Step 2: Validating delete request', { mediaIdCount: request.mediaIds.length });
     validationService.validateDeleteMediaRequest({ ...request, userId });
+    logger.info('Step 2: Validation passed');
 
-    logger.info('Deleting media files', {
+    // Step 3: Delete each media item (from S3 and DynamoDB)
+    logger.info('Step 3: Deleting media files', {
       userId,
       mediaCount: request.mediaIds.length,
     });
 
-    // Delete each media item (from S3 and DynamoDB)
     const results: DeleteResult[] = await Promise.all(
       request.mediaIds.map(async (mediaId) => {
         try {
           // Get the media item from DynamoDB to find S3 keys
+          logger.debug('Deleting media item', { mediaId, step: 'start' });
           const mediaItem = await dynamoDBService.getMediaItem(userId, mediaId);
 
           if (!mediaItem) {
+            logger.debug('Media item not found', { mediaId });
             return {
               mediaId,
               success: false,
@@ -70,13 +76,24 @@ export async function handler(
             };
           }
 
+          logger.debug('Fetched media record from DynamoDB', {
+            mediaId,
+            mediaType: mediaItem.mediaType,
+            hasPreview: !!mediaItem.previewS3Key,
+            hasThumbnail: !!mediaItem.thumbnailS3Key,
+          });
+
           // Delete from S3 uploads bucket (main/original file)
+          logger.debug('Deleting from uploads bucket', { mediaId, s3Key: mediaItem.s3Key });
           await s3Service.deleteObject(mediaItem.s3Key);
+          logger.debug('Deleted from uploads bucket', { mediaId, s3Key: mediaItem.s3Key });
 
           // Delete preview from lowres bucket if exists (videos and images)
           if (mediaItem.previewS3Key) {
             try {
+              logger.debug('Deleting preview from lowres bucket', { mediaId, previewS3Key: mediaItem.previewS3Key });
               await s3Service.deleteLowresObject(mediaItem.previewS3Key);
+              logger.debug('Deleted preview from lowres bucket', { mediaId, previewS3Key: mediaItem.previewS3Key });
             } catch (previewError) {
               // Log but don't fail if preview deletion fails
               logger.warn('Failed to delete preview from lowres bucket', {
@@ -90,7 +107,9 @@ export async function handler(
           // Delete thumbnail from lowres bucket if exists (videos only)
           if (mediaItem.thumbnailS3Key) {
             try {
+              logger.debug('Deleting thumbnail from lowres bucket', { mediaId, thumbnailS3Key: mediaItem.thumbnailS3Key });
               await s3Service.deleteLowresObject(mediaItem.thumbnailS3Key);
+              logger.debug('Deleted thumbnail from lowres bucket', { mediaId, thumbnailS3Key: mediaItem.thumbnailS3Key });
             } catch (thumbnailError) {
               // Log but don't fail if thumbnail deletion fails
               logger.warn('Failed to delete thumbnail from lowres bucket', {
@@ -102,14 +121,17 @@ export async function handler(
           }
 
           // Delete from DynamoDB
+          logger.debug('Deleting DynamoDB record', { mediaId });
           await dynamoDBService.deleteMediaRecord(userId, mediaId);
+          logger.debug('Deleted DynamoDB record', { mediaId });
 
+          logger.info('Deleted media item', { mediaId, step: 'complete', mediaType: mediaItem.mediaType });
           return {
             mediaId,
             success: true,
           };
         } catch (error) {
-          logger.error('Failed to delete media', error, { mediaId });
+          logger.error('Failed to delete media', error, { mediaId, step: 'failed' });
           return {
             mediaId,
             success: false,
@@ -123,7 +145,16 @@ export async function handler(
     const deleted = results.filter((r) => r.success).map((r) => r.mediaId);
     const failed = results.filter((r) => !r.success);
 
-    // Build success response
+    logger.info('Step 3: Delete operations completed', {
+      successCount: deleted.length,
+      failureCount: failed.length,
+    });
+
+    // Step 4: Build success response
+    logger.info('Step 4: Building response', {
+      successCount: deleted.length,
+      failureCount: failed.length,
+    });
     const response: DeleteMediaSuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'Files deleted successfully',

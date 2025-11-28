@@ -245,7 +245,7 @@ export class DynamoDBService {
   ): Promise<{ items: MediaItem[]; lastEvaluatedKey?: Record<string, any> }> {
     const { mediaType, status = 'ready', limit = 50, exclusiveStartKey } = options || {};
 
-    logger.debug('Querying media by user', { userId, mediaType, status, limit });
+    const endTimer = logger.startTimer('getMediaByUser', { userId, mediaType, status, limit });
 
     try {
       // Build filter expression
@@ -267,10 +267,20 @@ export class DynamoDBService {
         expressionAttributeValues[':mediaType'] = mediaType;
       }
 
+      const filterExpression = filterExpressions.join(' AND ');
+
+      logger.debug('DynamoDB query parameters', {
+        tableName: dynamoDBConfig.tableName,
+        keyCondition: 'PK = :pk AND begins_with(SK, :skPrefix)',
+        filterExpression,
+        limit,
+        hasPaginationToken: !!exclusiveStartKey,
+      });
+
       const command = new QueryCommand({
         TableName: dynamoDBConfig.tableName,
         KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-        FilterExpression: filterExpressions.join(' AND '),
+        FilterExpression: filterExpression,
         ExpressionAttributeValues: expressionAttributeValues,
         ExpressionAttributeNames: expressionAttributeNames,
         Limit: limit,
@@ -280,9 +290,11 @@ export class DynamoDBService {
 
       const response = await this.docClient.send(command);
 
-      logger.debug('Query completed', {
+      endTimer();
+      logger.debug('DynamoDB query completed', {
         userId,
         itemCount: response.Items?.length || 0,
+        scannedCount: response.ScannedCount,
         hasMore: !!response.LastEvaluatedKey,
       });
 
@@ -303,7 +315,7 @@ export class DynamoDBService {
    * Get a single media item by userId and mediaId
    */
   async getMediaItem(userId: string, mediaId: string): Promise<MediaItem | null> {
-    logger.debug('Getting media item', { userId, mediaId });
+    const endTimer = logger.startTimer('getMediaItem', { userId, mediaId });
 
     try {
       const command = new GetCommand({
@@ -316,14 +328,27 @@ export class DynamoDBService {
 
       const response = await this.docClient.send(command);
 
+      endTimer();
+
       if (!response.Item) {
         logger.debug('Media item not found', { userId, mediaId });
         return null;
       }
 
+      logger.debug('Media item retrieved', {
+        userId,
+        mediaId,
+        mediaType: (response.Item as MediaItem).mediaType,
+        status: (response.Item as MediaItem).status,
+      });
+
       return response.Item as MediaItem;
     } catch (error) {
-      logger.error('Failed to get media item', error, { userId, mediaId });
+      logger.error('Failed to get media item', error, {
+        userId,
+        mediaId,
+        operation: 'getMediaItem',
+      });
       throw new DynamoDBServiceError('Failed to get media item', {
         error: error instanceof Error ? error.message : String(error),
         userId,
@@ -500,7 +525,7 @@ export class DynamoDBService {
     const { mediaType, limit = 50 } = options || {};
     const normalizedQuery = query.toLowerCase().trim();
 
-    logger.debug('Searching media by filename', { userId, query: normalizedQuery, mediaType, limit });
+    const endTimer = logger.startTimer('searchMediaByFilename', { userId, query: normalizedQuery, mediaType, limit });
 
     try {
       // Build filter expression
@@ -524,10 +549,20 @@ export class DynamoDBService {
         expressionAttributeValues[':mediaType'] = mediaType;
       }
 
+      const filterExpression = filterExpressions.join(' AND ');
+
+      logger.debug('DynamoDB search query parameters', {
+        tableName: dynamoDBConfig.tableName,
+        keyCondition: 'PK = :pk AND begins_with(SK, :skPrefix)',
+        filterExpression,
+        searchQuery: normalizedQuery,
+        overFetchLimit: limit * 3,
+      });
+
       const command = new QueryCommand({
         TableName: dynamoDBConfig.tableName,
         KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-        FilterExpression: filterExpressions.join(' AND '),
+        FilterExpression: filterExpression,
         ExpressionAttributeValues: expressionAttributeValues,
         ExpressionAttributeNames: expressionAttributeNames,
         Limit: limit * 3, // Over-fetch since we're filtering client-side
@@ -538,15 +573,22 @@ export class DynamoDBService {
       // Take only the requested limit
       const items = (response.Items || []).slice(0, limit) as MediaItem[];
 
-      logger.debug('Search completed', {
+      endTimer();
+      logger.debug('DynamoDB search completed', {
         userId,
         query: normalizedQuery,
-        resultCount: items.length,
+        scannedCount: response.ScannedCount,
+        matchedCount: response.Items?.length || 0,
+        returnedCount: items.length,
       });
 
       return items;
     } catch (error) {
-      logger.error('Failed to search media', error, { userId, query });
+      logger.error('Failed to search media', error, {
+        userId,
+        query,
+        operation: 'searchMediaByFilename',
+      });
       throw new DynamoDBServiceError('Failed to search media', {
         error: error instanceof Error ? error.message : String(error),
         userId,

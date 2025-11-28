@@ -50,40 +50,51 @@ export async function handler(
     const userId = getAuthenticatedUserId(event);
     logger.setContext({ userId });
 
-    // Parse query parameters
+    // Step 1: Parse query parameters
+    logger.info('Step 1: Parsing search parameters');
     const queryParams = parseQueryParameters(event);
+    logger.info('Step 1: Search parameters parsed', {
+      query: queryParams.query,
+      mediaType: queryParams.mediaType,
+      limit: queryParams.limit,
+    });
 
-    // Validate query parameters
+    // Step 2: Validate query parameters
+    logger.info('Step 2: Validating search parameters');
     validationService.validateSearchMediaQueryParams({
       query: queryParams.query,
       mediaType: queryParams.mediaType,
       limit: queryParams.limit,
       continuationToken: queryParams.continuationToken,
     });
+    logger.info('Step 2: Validation passed');
 
     // Convert mediaType filter to DynamoDB format (singular form)
     const mediaType = convertMediaTypeFilter(queryParams.mediaType);
     const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
 
-    logger.info('Searching media files', {
+    // Step 3: Search media files from DynamoDB
+    logger.info('Step 3: Searching DynamoDB', {
       userId,
       query: queryParams.query,
       mediaType,
       limit,
     });
-
-    // Search media files from DynamoDB
     const items = await dynamoDBService.searchMediaByFilename(userId, queryParams.query, {
       mediaType,
       limit,
     });
+    logger.info('Step 3: DynamoDB search completed', { matchCount: items.length });
 
-    // Generate presigned URLs and build type-specific responses
+    // Step 4: Generate presigned URLs and build type-specific responses
+    logger.info('Step 4: Generating presigned URLs', { matchCount: items.length });
     const files: MediaFileInfo[] = await Promise.all(
       items.map((item) => buildMediaFileInfo(item))
     );
+    logger.info('Step 4: Presigned URLs generated', { fileCount: files.length });
 
-    // Build success response
+    // Step 5: Build success response
+    logger.info('Step 5: Building response', { resultCount: files.length });
     const response: SearchMediaSuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'Search completed successfully',

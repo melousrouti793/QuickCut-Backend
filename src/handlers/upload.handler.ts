@@ -38,26 +38,36 @@ export async function handler(
     const userId = getAuthenticatedUserId(event);
     logger.setContext({ userId });
 
-    // Parse request body
+    // Step 1: Parse and validate request
+    logger.info('Step 1: Parsing upload request');
     const request = parseRequestBody(event);
 
-    // Validate files
+    logger.info('Step 2: Validating files', { fileCount: request.files.length });
     validationService.validateFiles(request.files);
+    logger.info('Step 2: File validation passed', { fileCount: request.files.length });
 
-    // Create multipart uploads and generate presigned URLs
+    // Step 3: Create multipart uploads and generate presigned URLs
+    logger.info('Step 3: Creating S3 multipart uploads', { fileCount: request.files.length });
     const uploadConfigs = await s3Service.createMultipartUploads(
       request.files,
       userId
     );
+    logger.info('Step 3: S3 multipart uploads created', {
+      fileCount: uploadConfigs.length,
+      fileIds: uploadConfigs.map((c) => c.fileId),
+    });
 
-    // Create DynamoDB records for media index
+    // Step 4: Create DynamoDB records for media index
+    logger.info('Step 4: Creating DynamoDB media records', { fileCount: uploadConfigs.length });
     await dynamoDBService.createMediaRecords(
       userId,
       uploadConfigs,
       request.files
     );
+    logger.info('Step 4: DynamoDB media records created', { fileCount: uploadConfigs.length });
 
-    // Build success response
+    // Step 5: Build success response
+    logger.info('Step 5: Building response', { uploadCount: uploadConfigs.length });
     const response: SuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'Upload URLs generated successfully',

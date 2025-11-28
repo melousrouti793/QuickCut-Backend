@@ -65,6 +65,19 @@ class Logger {
   }
 
   /**
+   * Start a timer for measuring operation duration
+   * Returns a function that logs the completion with duration
+   */
+  startTimer(operation: string, meta?: Record<string, unknown>): () => void {
+    const start = Date.now();
+    this.debug(`${operation} started`, meta);
+    return () => {
+      const durationMs = Date.now() - start;
+      this.debug(`${operation} completed`, { ...meta, operation, durationMs });
+    };
+  }
+
+  /**
    * Core logging function
    */
   private log(level: LogLevel, message: string, meta?: Record<string, unknown>): void {
