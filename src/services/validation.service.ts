@@ -5,7 +5,6 @@
 
 import {
   MediaFile,
-  MediaFileWithThumbnail,
   ValidationResult,
   CompleteUploadRequest,
   UploadPart,
@@ -67,82 +66,7 @@ export class ValidationService {
   }
 
   /**
-   * Validate an array of media files with optional thumbnails
-   */
-  validateFilesWithThumbnails(files: MediaFileWithThumbnail[]): ValidationResult {
-    const errors: string[] = [];
-
-    // Check if files array exists and is not empty
-    if (!files || !Array.isArray(files)) {
-      throw new ValidationError(
-        'Files must be a non-empty array',
-        ErrorCode.MISSING_REQUIRED_FIELD,
-        { field: 'files' }
-      );
-    }
-
-    if (files.length === 0) {
-      throw new ValidationError(
-        'At least one file is required',
-        ErrorCode.INVALID_REQUEST,
-        { field: 'files' }
-      );
-    }
-
-    // Check file count limit
-    if (files.length > validationConfig.maxFilesPerRequest) {
-      throw new ValidationError(
-        `Maximum ${validationConfig.maxFilesPerRequest} files allowed per request`,
-        ErrorCode.TOO_MANY_FILES,
-        {
-          maxFiles: validationConfig.maxFilesPerRequest,
-          receivedFiles: files.length,
-        }
-      );
-    }
-
-    // Validate each file with thumbnail
-    files.forEach((fileWithThumbnail, index) => {
-      // Validate main file
-      if (!fileWithThumbnail.main) {
-        errors.push(`File at index ${index}: main file is required`);
-        return;
-      }
-
-      const mainFileErrors = this.validateSingleFile(fileWithThumbnail.main, index);
-      errors.push(...mainFileErrors.map(err => err.replace('File at', 'Main file at')));
-
-      // Validate thumbnail if provided
-      if (fileWithThumbnail.thumbnail) {
-        const thumbnailErrors = this.validateSingleFile(fileWithThumbnail.thumbnail, index);
-        errors.push(...thumbnailErrors.map(err => err.replace('File at', 'Thumbnail at')));
-
-        // Verify thumbnail is an image
-        if (fileWithThumbnail.thumbnail.fileType &&
-            !fileWithThumbnail.thumbnail.fileType.startsWith('image/')) {
-          errors.push(`Thumbnail at index ${index}: must be an image file (got ${fileWithThumbnail.thumbnail.fileType})`);
-        }
-      }
-    });
-
-    if (errors.length > 0) {
-      throw new ValidationError(
-        'File validation failed',
-        ErrorCode.INVALID_REQUEST,
-        { validationErrors: errors }
-      );
-    }
-
-    logger.info('File validation successful', { fileCount: files.length });
-
-    return {
-      isValid: true,
-      errors: [],
-    };
-  }
-
-  /**
-   * Validate an array of media files (legacy method for backwards compatibility)
+   * Validate an array of media files
    */
   validateFiles(files: MediaFile[]): ValidationResult {
     const errors: string[] = [];

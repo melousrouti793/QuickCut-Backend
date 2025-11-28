@@ -25,16 +25,9 @@ export interface MediaFile {
   fileSize: number;
 }
 
-export interface MediaFileWithThumbnail {
-  /** Main file (video, image, or audio) */
-  main: MediaFile;
-  /** Optional thumbnail (only for videos) */
-  thumbnail?: MediaFile;
-}
-
 export interface UploadRequest {
-  /** Array of media files to upload (with optional thumbnails) */
-  files: MediaFileWithThumbnail[];
+  /** Array of media files to upload */
+  files: MediaFile[];
 }
 
 export interface UploadPart {
@@ -105,13 +98,6 @@ export interface UploadConfiguration {
   expiresAt: string;
 }
 
-export interface UploadConfigurationWithThumbnail {
-  /** Upload configuration for the main file */
-  main: UploadConfiguration;
-  /** Upload configuration for the thumbnail (if provided) */
-  thumbnail?: UploadConfiguration;
-}
-
 export interface CompletedUpload {
   /** Unique identifier for the file */
   fileId: string;
@@ -134,10 +120,10 @@ export interface SuccessResponse {
   statusCode: 200;
   /** Success message */
   message: string;
-  /** Array of upload configurations with optional thumbnails */
+  /** Array of upload configurations */
   data: {
-    uploads: UploadConfigurationWithThumbnail[];
-    /** Total number of media items (each may have main + thumbnail) */
+    uploads: UploadConfiguration[];
+    /** Total number of media items */
     totalFiles: number;
   };
 }
@@ -151,24 +137,62 @@ export interface CompleteSuccessResponse {
   data: CompletedUpload;
 }
 
-export interface MediaFileInfo {
+export interface VideoFileInfo {
   /** Unique media identifier */
   mediaId: string;
-  /** Original filename (from DynamoDB) */
+  /** Original filename */
   filename: string;
-  /** Media type (video, image, or audio - singular form) */
-  mediaType: MediaType;
+  /** Media type */
+  mediaType: 'video';
   /** MIME type */
   mimeType: string;
   /** File size in bytes */
   size: number;
   /** Upload timestamp */
   uploadedAt: string;
-  /** Presigned URL for the file */
-  url: string;
-  /** Presigned URL for thumbnail (present for videos, null for images/audios) */
-  thumbnailUrl: string | null;
+  /** Presigned URL for lower-res preview video */
+  previewUrl: string;
+  /** Presigned URL for thumbnail image */
+  thumbnailUrl: string;
 }
+
+export interface ImageFileInfo {
+  /** Unique media identifier */
+  mediaId: string;
+  /** Original filename */
+  filename: string;
+  /** Media type */
+  mediaType: 'image';
+  /** MIME type */
+  mimeType: string;
+  /** File size in bytes */
+  size: number;
+  /** Upload timestamp */
+  uploadedAt: string;
+  /** Presigned URL for original image */
+  url: string;
+  /** Presigned URL for lower-res preview image */
+  previewUrl: string;
+}
+
+export interface AudioFileInfo {
+  /** Unique media identifier */
+  mediaId: string;
+  /** Original filename */
+  filename: string;
+  /** Media type */
+  mediaType: 'audio';
+  /** MIME type */
+  mimeType: string;
+  /** File size in bytes */
+  size: number;
+  /** Upload timestamp */
+  uploadedAt: string;
+  /** Presigned URL for original audio */
+  url: string;
+}
+
+export type MediaFileInfo = VideoFileInfo | ImageFileInfo | AudioFileInfo;
 
 export interface ListMediaSuccessResponse {
   /** HTTP status code */
@@ -276,6 +300,8 @@ export interface MediaItem {
   sizeBytes: number;
   /** S3 key for the main file */
   s3Key: string;
+  /** S3 key for lower-res preview (videos and images, null for audio) */
+  previewS3Key: string | null;
   /** S3 key for thumbnail (videos only, null for images/audio) */
   thumbnailS3Key: string | null;
   /** Processing status */
@@ -364,16 +390,44 @@ export interface RenameMediaRequest {
   newFilename: string;
 }
 
-export interface RenameMediaData {
+export interface RenameVideoData {
   /** Media ID */
   mediaId: string;
   /** New filename */
   filename: string;
-  /** Presigned URL for the file */
-  url: string;
-  /** Presigned URL for thumbnail (present for videos, null for images/audios) */
-  thumbnailUrl: string | null;
+  /** Media type */
+  mediaType: 'video';
+  /** Presigned URL for lower-res preview video */
+  previewUrl: string;
+  /** Presigned URL for thumbnail image */
+  thumbnailUrl: string;
 }
+
+export interface RenameImageData {
+  /** Media ID */
+  mediaId: string;
+  /** New filename */
+  filename: string;
+  /** Media type */
+  mediaType: 'image';
+  /** Presigned URL for original image */
+  url: string;
+  /** Presigned URL for lower-res preview image */
+  previewUrl: string;
+}
+
+export interface RenameAudioData {
+  /** Media ID */
+  mediaId: string;
+  /** New filename */
+  filename: string;
+  /** Media type */
+  mediaType: 'audio';
+  /** Presigned URL for original audio */
+  url: string;
+}
+
+export type RenameMediaData = RenameVideoData | RenameImageData | RenameAudioData;
 
 export interface RenameMediaSuccessResponse {
   /** HTTP status code */

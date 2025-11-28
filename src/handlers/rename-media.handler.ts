@@ -11,6 +11,11 @@ import {
   ErrorResponse,
   HttpStatus,
   ErrorCode,
+  RenameMediaData,
+  RenameVideoData,
+  RenameImageData,
+  RenameAudioData,
+  MediaItem,
 } from '../types';
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
@@ -69,22 +74,14 @@ export async function handler(
     // Update filename in DynamoDB only (no S3 changes)
     await dynamoDBService.updateMediaFilename(userId, request.mediaId, sanitizedFilename);
 
-    // Generate presigned URLs for response
-    const url = await s3Service.generatePresignedGetUrl(mediaItem.s3Key);
-    const thumbnailUrl = mediaItem.thumbnailS3Key
-      ? await s3Service.generatePresignedGetUrl(mediaItem.thumbnailS3Key)
-      : null;
+    // Build type-specific response data
+    const responseData = await buildRenameResponseData(mediaItem, sanitizedFilename);
 
     // Build success response
     const response: RenameMediaSuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'File renamed successfully',
-      data: {
-        mediaId: request.mediaId,
-        filename: sanitizedFilename,
-        url,
-        thumbnailUrl,
-      },
+      data: responseData,
     };
 
     logger.info('Rename media request completed successfully', {
@@ -147,6 +144,55 @@ function parseRequestBody(event: APIGatewayProxyEventV2): { mediaId: string; new
       'INVALID_REQUEST' as any,
       'Invalid JSON in request body'
     );
+  }
+}
+
+/**
+ * Build type-specific rename response data
+ * - Videos: previewUrl + thumbnailUrl
+ * - Images: url (original) + previewUrl
+ * - Audio: url (original)
+ */
+async function buildRenameResponseData(
+  item: MediaItem,
+  newFilename: string
+): Promise<RenameMediaData> {
+  switch (item.mediaType) {
+    case 'video': {
+      const videoData: RenameVideoData = {
+        mediaId: item.mediaId,
+        filename: newFilename,
+        mediaType: 'video',
+        previewUrl: item.previewS3Key
+          ? await s3Service.generatePresignedGetUrl(item.previewS3Key)
+          : '',
+        thumbnailUrl: item.thumbnailS3Key
+          ? await s3Service.generatePresignedGetUrl(item.thumbnailS3Key)
+          : '',
+      };
+      return videoData;
+    }
+    case 'image': {
+      const imageData: RenameImageData = {
+        mediaId: item.mediaId,
+        filename: newFilename,
+        mediaType: 'image',
+        url: await s3Service.generatePresignedGetUrl(item.s3Key),
+        previewUrl: item.previewS3Key
+          ? await s3Service.generatePresignedGetUrl(item.previewS3Key)
+          : '',
+      };
+      return imageData;
+    }
+    case 'audio': {
+      const audioData: RenameAudioData = {
+        mediaId: item.mediaId,
+        filename: newFilename,
+        mediaType: 'audio',
+        url: await s3Service.generatePresignedGetUrl(item.s3Key),
+      };
+      return audioData;
+    }
   }
 }
 

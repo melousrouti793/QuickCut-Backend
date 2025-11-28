@@ -20,9 +20,7 @@ import { logger } from '../utils/logger';
 import { S3ServiceError } from '../errors/AppError';
 import {
   MediaFile,
-  MediaFileWithThumbnail,
   UploadConfiguration,
-  UploadConfigurationWithThumbnail,
   PresignedUrlInfo,
   MultipartUploadInfo,
   UploadPart,
@@ -54,19 +52,19 @@ export class S3Service {
   }
 
   /**
-   * Create multipart upload configurations for multiple files with optional thumbnails
+   * Create multipart upload configurations for multiple files
    */
   async createMultipartUploads(
-    files: MediaFileWithThumbnail[],
+    files: MediaFile[],
     userId: string
-  ): Promise<UploadConfigurationWithThumbnail[]> {
+  ): Promise<UploadConfiguration[]> {
     logger.info('Creating multipart uploads', {
       fileCount: files.length,
       userId,
     });
 
-    const uploadPromises = files.map((fileWithThumbnail) =>
-      this.createMultipartUploadWithThumbnail(fileWithThumbnail, userId)
+    const uploadPromises = files.map((file) =>
+      this.createSingleMultipartUpload(file, userId)
     );
 
     try {
@@ -80,128 +78,6 @@ export class S3Service {
       throw new S3ServiceError('Failed to initiate S3 multipart uploads', {
         error: error instanceof Error ? error.message : String(error),
       });
-    }
-  }
-
-  /**
-   * Create multipart upload for a file with optional thumbnail
-   */
-  private async createMultipartUploadWithThumbnail(
-    fileWithThumbnail: MediaFileWithThumbnail,
-    userId: string
-  ): Promise<UploadConfigurationWithThumbnail> {
-    // Generate a single fileId for both main file and thumbnail
-    const fileId = uuidv4();
-
-    logger.debug('Creating upload for file with thumbnail', {
-      fileId,
-      mainFilename: fileWithThumbnail.main.filename,
-      hasThumbnail: !!fileWithThumbnail.thumbnail,
-    });
-
-    // Create upload config for main file
-    const mainUploadConfig = await this.createSingleMultipartUpload(
-      fileWithThumbnail.main,
-      userId,
-      fileId
-    );
-
-    // Create upload config for thumbnail if provided (only for videos)
-    let thumbnailUploadConfig: UploadConfiguration | undefined;
-    if (fileWithThumbnail.thumbnail) {
-      // Use fixed filename "thumbnail.jpg" for thumbnails
-      // Thumbnails go in their own directory: userId/thumbnails/fileId/thumbnail.jpg
-      thumbnailUploadConfig = await this.createThumbnailMultipartUpload(
-        fileWithThumbnail.thumbnail,
-        userId,
-        fileId
-      );
-    }
-
-    return {
-      main: mainUploadConfig,
-      thumbnail: thumbnailUploadConfig,
-    };
-  }
-
-  /**
-   * Create a multipart upload for a thumbnail file
-   * Thumbnails are stored in: userId/thumbnails/fileId/thumbnail.jpg
-   */
-  private async createThumbnailMultipartUpload(
-    file: MediaFile,
-    userId: string,
-    fileId: string
-  ): Promise<UploadConfiguration> {
-    // Thumbnail S3 key: userId/thumbnails/fileId/thumbnail.jpg
-    const s3Key = `${userId}/thumbnails/${fileId}/thumbnail.jpg`;
-
-    logger.debug('Initiating thumbnail multipart upload', {
-      fileId,
-      s3Key,
-      filename: file.filename,
-    });
-
-    try {
-      // Create multipart upload in S3
-      const createCommand = new CreateMultipartUploadCommand({
-        Bucket: s3Config.bucketName,
-        Key: s3Key,
-        ContentType: file.fileType,
-        Metadata: {
-          userId,
-          fileId,
-          originalFilename: 'thumbnail.jpg',
-          uploadedAt: new Date().toISOString(),
-        },
-        // Server-side encryption (recommended)
-        ServerSideEncryption: 'AES256',
-      });
-
-      const createResponse = await this.s3Client.send(createCommand);
-
-      if (!createResponse.UploadId) {
-        throw new Error('S3 did not return an UploadId');
-      }
-
-      // Calculate number of parts needed
-      const partCount = this.calculatePartCount(file.fileSize);
-
-      // Generate presigned URLs for all parts
-      const parts = await this.generatePresignedUrls(
-        s3Key,
-        createResponse.UploadId,
-        partCount
-      );
-
-      // Calculate expiration time
-      const expiresAt = new Date(
-        Date.now() + s3Config.presignedUrlExpiry * 1000
-      ).toISOString();
-
-      const uploadConfig: UploadConfiguration = {
-        fileId,
-        s3Key,
-        bucket: s3Config.bucketName,
-        uploadId: createResponse.UploadId,
-        parts,
-        filename: 'thumbnail.jpg',
-        fileType: file.fileType,
-        expiresAt,
-      };
-
-      logger.info('Thumbnail multipart upload created', {
-        fileId,
-        uploadId: createResponse.UploadId,
-        partCount,
-      });
-
-      return uploadConfig;
-    } catch (error) {
-      logger.error('Failed to create thumbnail multipart upload', error, {
-        filename: file.filename,
-      });
-      throw error;
     }
   }
 

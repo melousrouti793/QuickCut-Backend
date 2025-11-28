@@ -21,9 +21,7 @@ import {
   MediaType,
   MediaStatus,
   MediaFile,
-  MediaFileWithThumbnail,
   UploadConfiguration,
-  UploadConfigurationWithThumbnail,
 } from '../types';
 
 /**
@@ -61,8 +59,8 @@ export class DynamoDBService {
    */
   async createMediaRecords(
     userId: string,
-    uploadConfigs: UploadConfigurationWithThumbnail[],
-    files: MediaFileWithThumbnail[]
+    uploadConfigs: UploadConfiguration[],
+    files: MediaFile[]
   ): Promise<void> {
     logger.info('Creating media records in DynamoDB', {
       userId,
@@ -72,12 +70,7 @@ export class DynamoDBService {
     // Build media items from upload configs and original file data
     const mediaItems: MediaItem[] = uploadConfigs.map((config, index) => {
       const file = files[index];
-      return this.buildMediaItem(
-        userId,
-        config.main,
-        file.main,
-        config.thumbnail?.s3Key || null
-      );
+      return this.buildMediaItem(userId, config, file);
     });
 
     try {
@@ -100,12 +93,13 @@ export class DynamoDBService {
 
   /**
    * Build a MediaItem from upload data
+   * previewS3Key and thumbnailS3Key are set to null initially
+   * Server-side processing will populate these after upload completes
    */
   private buildMediaItem(
     userId: string,
     uploadConfig: UploadConfiguration,
-    file: MediaFile,
-    thumbnailS3Key: string | null
+    file: MediaFile
   ): MediaItem {
     const now = new Date().toISOString();
     const mediaType = this.getMediaType(file.fileType);
@@ -120,7 +114,8 @@ export class DynamoDBService {
       mimeType: file.fileType,
       sizeBytes: file.fileSize,
       s3Key: uploadConfig.s3Key,
-      thumbnailS3Key,
+      previewS3Key: null,
+      thumbnailS3Key: null,
       status: 'processing',
       createdAt: now,
       updatedAt: now,

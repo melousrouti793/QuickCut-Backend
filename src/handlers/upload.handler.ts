@@ -41,8 +41,8 @@ export async function handler(
     // Parse request body
     const request = parseRequestBody(event);
 
-    // Validate files with thumbnails
-    validationService.validateFilesWithThumbnails(request.files);
+    // Validate files
+    validationService.validateFiles(request.files);
 
     // Create multipart uploads and generate presigned URLs
     const uploadConfigs = await s3Service.createMultipartUploads(

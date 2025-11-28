@@ -73,6 +73,20 @@ export async function handler(
           // Delete from S3 (main file)
           await s3Service.deleteObject(mediaItem.s3Key);
 
+          // Delete preview if exists
+          if (mediaItem.previewS3Key) {
+            try {
+              await s3Service.deleteObject(mediaItem.previewS3Key);
+            } catch (previewError) {
+              // Log but don't fail if preview deletion fails
+              logger.warn('Failed to delete preview', {
+                mediaId,
+                previewS3Key: mediaItem.previewS3Key,
+                error: previewError instanceof Error ? previewError.message : String(previewError),
+              });
+            }
+          }
+
           // Delete thumbnail if exists
           if (mediaItem.thumbnailS3Key) {
             try {

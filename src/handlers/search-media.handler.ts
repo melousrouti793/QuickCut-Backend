@@ -13,6 +13,10 @@ import {
   MediaFileInfo,
   MediaType,
   MediaTypeFilter,
+  VideoFileInfo,
+  ImageFileInfo,
+  AudioFileInfo,
+  MediaItem,
 } from '../types';
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
@@ -74,20 +78,9 @@ export async function handler(
       limit,
     });
 
-    // Generate presigned URLs for each item
+    // Generate presigned URLs and build type-specific responses
     const files: MediaFileInfo[] = await Promise.all(
-      items.map(async (item) => ({
-        mediaId: item.mediaId,
-        filename: item.filename,
-        mediaType: item.mediaType,
-        mimeType: item.mimeType,
-        size: item.sizeBytes,
-        uploadedAt: item.createdAt,
-        url: await s3Service.generatePresignedGetUrl(item.s3Key),
-        thumbnailUrl: item.thumbnailS3Key
-          ? await s3Service.generatePresignedGetUrl(item.thumbnailS3Key)
-          : null,
-      }))
+      items.map((item) => buildMediaFileInfo(item))
     );
 
     // Build success response
@@ -162,6 +155,57 @@ function convertMediaTypeFilter(filter?: string): MediaType | undefined {
   };
 
   return filterMap[filter.toLowerCase()];
+}
+
+/**
+ * Build type-specific MediaFileInfo from DynamoDB item
+ * - Videos: previewUrl + thumbnailUrl
+ * - Images: url (original) + previewUrl
+ * - Audio: url (original)
+ */
+async function buildMediaFileInfo(item: MediaItem): Promise<MediaFileInfo> {
+  const baseInfo = {
+    mediaId: item.mediaId,
+    filename: item.filename,
+    mimeType: item.mimeType,
+    size: item.sizeBytes,
+    uploadedAt: item.createdAt,
+  };
+
+  switch (item.mediaType) {
+    case 'video': {
+      const videoInfo: VideoFileInfo = {
+        ...baseInfo,
+        mediaType: 'video',
+        previewUrl: item.previewS3Key
+          ? await s3Service.generatePresignedGetUrl(item.previewS3Key)
+          : '',
+        thumbnailUrl: item.thumbnailS3Key
+          ? await s3Service.generatePresignedGetUrl(item.thumbnailS3Key)
+          : '',
+      };
+      return videoInfo;
+    }
+    case 'image': {
+      const imageInfo: ImageFileInfo = {
+        ...baseInfo,
+        mediaType: 'image',
+        url: await s3Service.generatePresignedGetUrl(item.s3Key),
+        previewUrl: item.previewS3Key
+          ? await s3Service.generatePresignedGetUrl(item.previewS3Key)
+          : '',
+      };
+      return imageInfo;
+    }
+    case 'audio': {
+      const audioInfo: AudioFileInfo = {
+        ...baseInfo,
+        mediaType: 'audio',
+        url: await s3Service.generatePresignedGetUrl(item.s3Key),
+      };
+      return audioInfo;
+    }
+  }
 }
 
 /**
