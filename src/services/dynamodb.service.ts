@@ -596,6 +596,118 @@ export class DynamoDBService {
       });
     }
   }
+
+  /**
+   * Atomically increment user profile stats when media is uploaded
+   * Uses DynamoDB ADD operation which is atomic and handles concurrent writes
+   */
+  async incrementUserStats(
+    userId: string,
+    mediaType: MediaType,
+    sizeBytes: number
+  ): Promise<void> {
+    logger.debug('Incrementing user stats', { userId, mediaType, sizeBytes });
+
+    // Map mediaType to the corresponding count field
+    const typeCountField = this.getTypeCountField(mediaType);
+
+    try {
+      const command = new UpdateCommand({
+        TableName: dynamoDBConfig.tableName,
+        Key: {
+          PK: `USER#${userId}`,
+          SK: 'PROFILE',
+        },
+        UpdateExpression: `ADD mediaCount :one, ${typeCountField} :one, storageUsedBytes :size SET updatedAt = :updatedAt`,
+        ExpressionAttributeValues: {
+          ':one': 1,
+          ':size': sizeBytes,
+          ':updatedAt': new Date().toISOString(),
+        },
+        ConditionExpression: 'attribute_exists(PK)',
+      });
+
+      await this.docClient.send(command);
+
+      logger.info('User stats incremented', {
+        userId,
+        mediaType,
+        sizeBytes,
+        incrementedField: typeCountField,
+      });
+    } catch (error) {
+      // Log but don't throw - stats update failure shouldn't fail the upload
+      logger.error('Failed to increment user stats', error, {
+        userId,
+        mediaType,
+        sizeBytes,
+      });
+    }
+  }
+
+  /**
+   * Atomically decrement user profile stats when media is deleted
+   * Uses DynamoDB ADD operation with negative values for atomic decrement
+   */
+  async decrementUserStats(
+    userId: string,
+    mediaType: MediaType,
+    sizeBytes: number
+  ): Promise<void> {
+    logger.debug('Decrementing user stats', { userId, mediaType, sizeBytes });
+
+    // Map mediaType to the corresponding count field
+    const typeCountField = this.getTypeCountField(mediaType);
+
+    try {
+      const command = new UpdateCommand({
+        TableName: dynamoDBConfig.tableName,
+        Key: {
+          PK: `USER#${userId}`,
+          SK: 'PROFILE',
+        },
+        UpdateExpression: `ADD mediaCount :negOne, ${typeCountField} :negOne, storageUsedBytes :negSize SET updatedAt = :updatedAt`,
+        ExpressionAttributeValues: {
+          ':negOne': -1,
+          ':negSize': -sizeBytes,
+          ':updatedAt': new Date().toISOString(),
+        },
+        ConditionExpression: 'attribute_exists(PK)',
+      });
+
+      await this.docClient.send(command);
+
+      logger.info('User stats decremented', {
+        userId,
+        mediaType,
+        sizeBytes,
+        decrementedField: typeCountField,
+      });
+    } catch (error) {
+      // Log but don't throw - stats update failure shouldn't fail the delete
+      logger.error('Failed to decrement user stats', error, {
+        userId,
+        mediaType,
+        sizeBytes,
+      });
+    }
+  }
+
+  /**
+   * Get the count field name for a given media type
+   */
+  private getTypeCountField(mediaType: MediaType): string {
+    switch (mediaType) {
+      case 'video':
+        return 'videoCount';
+      case 'image':
+        return 'imageCount';
+      case 'audio':
+        return 'audioCount';
+      default:
+        return 'videoCount';
+    }
+  }
 }
 
 // Export singleton instance

@@ -14,6 +14,7 @@ import {
 import { AppError } from '../errors/AppError';
 import { validationService } from '../services/validation.service';
 import { s3Service } from '../services/s3.service';
+import { dynamoDBService } from '../services/dynamodb.service';
 import { logger } from '../utils/logger';
 import { validateConfig } from '../config';
 import { getAuthenticatedUserId } from '../utils/auth';
@@ -76,11 +77,31 @@ export async function handler(
       location: completedUpload.location,
     });
 
+    // Step 4: Update user profile stats (atomic increment)
+    logger.info('Step 4: Updating user profile stats', { fileId: request.fileId });
+    const mediaItem = await dynamoDBService.getMediaItem(userId, request.fileId);
+    if (mediaItem) {
+      await dynamoDBService.incrementUserStats(
+        userId,
+        mediaItem.mediaType,
+        mediaItem.sizeBytes
+      );
+      logger.info('Step 4: User stats updated', {
+        fileId: request.fileId,
+        mediaType: mediaItem.mediaType,
+        sizeBytes: mediaItem.sizeBytes,
+      });
+    } else {
+      logger.warn('Step 4: Media item not found for stats update', {
+        fileId: request.fileId,
+      });
+    }
+
     // Note: Status remains 'processing' until server-side processing
     // (preview/thumbnail generation) completes and sets it to 'ready'
 
-    // Step 4: Build success response
-    logger.info('Step 4: Building response', { fileId: request.fileId });
+    // Step 5: Build success response
+    logger.info('Step 5: Building response', { fileId: request.fileId });
     const response: CompleteSuccessResponse = {
       statusCode: HttpStatus.OK,
       message: 'Upload completed successfully',

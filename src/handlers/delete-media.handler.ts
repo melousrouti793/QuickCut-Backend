@@ -125,6 +125,15 @@ export async function handler(
           await dynamoDBService.deleteMediaRecord(userId, mediaId);
           logger.debug('Deleted DynamoDB record', { mediaId });
 
+          // Decrement user profile stats (atomic decrement)
+          logger.debug('Decrementing user stats', { mediaId, mediaType: mediaItem.mediaType, sizeBytes: mediaItem.sizeBytes });
+          await dynamoDBService.decrementUserStats(
+            userId,
+            mediaItem.mediaType,
+            mediaItem.sizeBytes
+          );
+          logger.debug('Decremented user stats', { mediaId });
+
           logger.info('Deleted media item', { mediaId, step: 'complete', mediaType: mediaItem.mediaType });
           return {
             mediaId,

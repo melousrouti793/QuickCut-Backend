@@ -351,6 +351,40 @@ export interface MediaItem {
   segmentCount?: number;
 }
 
+/** DynamoDB user profile record */
+export interface UserProfile {
+  /** Partition key: USER#<userId> */
+  PK: string;
+  /** Sort key: PROFILE */
+  SK: 'PROFILE';
+  /** Entity type identifier */
+  entityType: 'USER';
+  /** Stytch user ID */
+  userId: string;
+  /** User's email address */
+  email: string;
+  /** Authentication method (email, google, etc.) */
+  authMethod: string;
+  /** Stripe customer ID (set when payment method added) */
+  stripeCustomerId: string | null;
+  /** Total storage used in bytes */
+  storageUsedBytes: number;
+  /** Total number of media files */
+  mediaCount: number;
+  /** Number of video files */
+  videoCount: number;
+  /** Number of image files */
+  imageCount: number;
+  /** Number of audio files */
+  audioCount: number;
+  /** Number of projects created */
+  projectCount: number;
+  /** Creation timestamp (ISO 8601) */
+  createdAt: string;
+  /** Last update timestamp (ISO 8601) */
+  updatedAt: string;
+}
+
 // ============================================================================
 // Internal Types
 // ============================================================================
