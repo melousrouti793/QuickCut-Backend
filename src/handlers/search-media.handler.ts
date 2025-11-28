@@ -158,10 +158,10 @@ function convertMediaTypeFilter(filter?: string): MediaType | undefined {
 }
 
 /**
- * Build type-specific MediaFileInfo from DynamoDB item
- * - Videos: previewUrl + thumbnailUrl
- * - Images: url (original) + previewUrl
- * - Audio: url (original)
+ * Build type-specific MediaFileInfo from DynamoDB item with rich metadata
+ * - Videos: previewUrl + thumbnailUrl (from lowres bucket), duration, dimensions, sceneCount
+ * - Images: previewUrl (from lowres bucket), dimensions, description
+ * - Audio: url (from uploads bucket - original high-res), duration, segmentCount
  */
 async function buildMediaFileInfo(item: MediaItem): Promise<MediaFileInfo> {
   const baseInfo = {
@@ -170,6 +170,7 @@ async function buildMediaFileInfo(item: MediaItem): Promise<MediaFileInfo> {
     mimeType: item.mimeType,
     size: item.sizeBytes,
     uploadedAt: item.createdAt,
+    status: item.status,
   };
 
   switch (item.mediaType) {
@@ -177,12 +178,18 @@ async function buildMediaFileInfo(item: MediaItem): Promise<MediaFileInfo> {
       const videoInfo: VideoFileInfo = {
         ...baseInfo,
         mediaType: 'video',
+        // Preview and thumbnail URLs from lowres bucket
         previewUrl: item.previewS3Key
-          ? await s3Service.generatePresignedGetUrl(item.previewS3Key)
+          ? await s3Service.generateLowresPresignedGetUrl(item.previewS3Key)
           : '',
         thumbnailUrl: item.thumbnailS3Key
-          ? await s3Service.generatePresignedGetUrl(item.thumbnailS3Key)
-          : '',
+          ? await s3Service.generateLowresPresignedGetUrl(item.thumbnailS3Key)
+          : null,
+        // Rich metadata from processing
+        duration: item.duration ?? 0,
+        width: item.width ?? 0,
+        height: item.height ?? 0,
+        sceneCount: item.sceneCount ?? 0,
       };
       return videoInfo;
     }
@@ -190,10 +197,14 @@ async function buildMediaFileInfo(item: MediaItem): Promise<MediaFileInfo> {
       const imageInfo: ImageFileInfo = {
         ...baseInfo,
         mediaType: 'image',
-        url: await s3Service.generatePresignedGetUrl(item.s3Key),
+        // Preview URL from lowres bucket (no original URL exposed for images)
         previewUrl: item.previewS3Key
-          ? await s3Service.generatePresignedGetUrl(item.previewS3Key)
+          ? await s3Service.generateLowresPresignedGetUrl(item.previewS3Key)
           : '',
+        // Rich metadata from processing
+        width: item.width ?? 0,
+        height: item.height ?? 0,
+        description: item.description ?? '',
       };
       return imageInfo;
     }
@@ -201,7 +212,11 @@ async function buildMediaFileInfo(item: MediaItem): Promise<MediaFileInfo> {
       const audioInfo: AudioFileInfo = {
         ...baseInfo,
         mediaType: 'audio',
+        // Original URL from uploads bucket (audio has no lowres version)
         url: await s3Service.generatePresignedGetUrl(item.s3Key),
+        // Rich metadata from processing
+        duration: item.duration ?? 0,
+        segmentCount: item.segmentCount ?? 0,
       };
       return audioInfo;
     }

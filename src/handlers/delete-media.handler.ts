@@ -70,16 +70,16 @@ export async function handler(
             };
           }
 
-          // Delete from S3 (main file)
+          // Delete from S3 uploads bucket (main/original file)
           await s3Service.deleteObject(mediaItem.s3Key);
 
-          // Delete preview if exists
+          // Delete preview from lowres bucket if exists (videos and images)
           if (mediaItem.previewS3Key) {
             try {
-              await s3Service.deleteObject(mediaItem.previewS3Key);
+              await s3Service.deleteLowresObject(mediaItem.previewS3Key);
             } catch (previewError) {
               // Log but don't fail if preview deletion fails
-              logger.warn('Failed to delete preview', {
+              logger.warn('Failed to delete preview from lowres bucket', {
                 mediaId,
                 previewS3Key: mediaItem.previewS3Key,
                 error: previewError instanceof Error ? previewError.message : String(previewError),
@@ -87,13 +87,13 @@ export async function handler(
             }
           }
 
-          // Delete thumbnail if exists
+          // Delete thumbnail from lowres bucket if exists (videos only)
           if (mediaItem.thumbnailS3Key) {
             try {
-              await s3Service.deleteObject(mediaItem.thumbnailS3Key);
+              await s3Service.deleteLowresObject(mediaItem.thumbnailS3Key);
             } catch (thumbnailError) {
               // Log but don't fail if thumbnail deletion fails
-              logger.warn('Failed to delete thumbnail', {
+              logger.warn('Failed to delete thumbnail from lowres bucket', {
                 mediaId,
                 thumbnailS3Key: mediaItem.thumbnailS3Key,
                 error: thumbnailError instanceof Error ? thumbnailError.message : String(thumbnailError),

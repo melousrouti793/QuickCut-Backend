@@ -150,10 +150,20 @@ export interface VideoFileInfo {
   size: number;
   /** Upload timestamp */
   uploadedAt: string;
-  /** Presigned URL for lower-res preview video */
+  /** Processing status */
+  status: MediaStatus;
+  /** Presigned URL for lower-res preview video (from lowres bucket) */
   previewUrl: string;
-  /** Presigned URL for thumbnail image */
-  thumbnailUrl: string;
+  /** Presigned URL for thumbnail image (from lowres bucket) */
+  thumbnailUrl: string | null;
+  /** Video duration in seconds */
+  duration: number;
+  /** Video width in pixels */
+  width: number;
+  /** Video height in pixels */
+  height: number;
+  /** Number of scenes detected */
+  sceneCount: number;
 }
 
 export interface ImageFileInfo {
@@ -169,10 +179,16 @@ export interface ImageFileInfo {
   size: number;
   /** Upload timestamp */
   uploadedAt: string;
-  /** Presigned URL for original image */
-  url: string;
-  /** Presigned URL for lower-res preview image */
+  /** Processing status */
+  status: MediaStatus;
+  /** Presigned URL for lower-res preview image (from lowres bucket) */
   previewUrl: string;
+  /** Image width in pixels */
+  width: number;
+  /** Image height in pixels */
+  height: number;
+  /** AI-generated description of the image */
+  description: string;
 }
 
 export interface AudioFileInfo {
@@ -188,8 +204,14 @@ export interface AudioFileInfo {
   size: number;
   /** Upload timestamp */
   uploadedAt: string;
-  /** Presigned URL for original audio */
+  /** Processing status */
+  status: MediaStatus;
+  /** Presigned URL for original audio (from uploads bucket) */
   url: string;
+  /** Audio duration in seconds */
+  duration: number;
+  /** Number of segments detected */
+  segmentCount: number;
 }
 
 export type MediaFileInfo = VideoFileInfo | ImageFileInfo | AudioFileInfo;
@@ -244,8 +266,10 @@ export interface ValidationConfig {
 }
 
 export interface S3Config {
-  /** S3 bucket name for uploads */
+  /** S3 bucket name for uploads (quickcut-media-uploads) */
   bucketName: string;
+  /** S3 bucket name for lowres previews/thumbnails (quickcut-lowres) */
+  lowresBucketName: string;
   /** S3 region */
   region: string;
   /** Prefix for S3 keys */
@@ -298,11 +322,11 @@ export interface MediaItem {
   mimeType: string;
   /** File size in bytes */
   sizeBytes: number;
-  /** S3 key for the main file */
+  /** S3 key for the main file (in quickcut-media-uploads bucket) */
   s3Key: string;
-  /** S3 key for lower-res preview (videos and images, null for audio) */
+  /** S3 key for lower-res preview (in quickcut-lowres bucket, null for audio) */
   previewS3Key: string | null;
-  /** S3 key for thumbnail (videos only, null for images/audio) */
+  /** S3 key for thumbnail (in quickcut-lowres bucket, videos only) */
   thumbnailS3Key: string | null;
   /** Processing status */
   status: MediaStatus;
@@ -310,6 +334,21 @@ export interface MediaItem {
   createdAt: string;
   /** Last update timestamp (ISO 8601) */
   updatedAt: string;
+  // Rich metadata fields (populated after processing)
+  /** Duration in seconds (videos and audio only) */
+  duration?: number;
+  /** Width in pixels (videos and images only) */
+  width?: number;
+  /** Height in pixels (videos and images only) */
+  height?: number;
+  /** Full transcript (videos only) */
+  transcript?: string;
+  /** Number of scenes detected (videos only) */
+  sceneCount?: number;
+  /** AI-generated description (images only) */
+  description?: string;
+  /** Number of segments detected (audio only) */
+  segmentCount?: number;
 }
 
 // ============================================================================
@@ -397,10 +436,26 @@ export interface RenameVideoData {
   filename: string;
   /** Media type */
   mediaType: 'video';
-  /** Presigned URL for lower-res preview video */
+  /** MIME type */
+  mimeType: string;
+  /** File size in bytes */
+  size: number;
+  /** Upload timestamp */
+  uploadedAt: string;
+  /** Processing status */
+  status: MediaStatus;
+  /** Presigned URL for lower-res preview video (from lowres bucket) */
   previewUrl: string;
-  /** Presigned URL for thumbnail image */
-  thumbnailUrl: string;
+  /** Presigned URL for thumbnail image (from lowres bucket) */
+  thumbnailUrl: string | null;
+  /** Video duration in seconds */
+  duration: number;
+  /** Video width in pixels */
+  width: number;
+  /** Video height in pixels */
+  height: number;
+  /** Number of scenes detected */
+  sceneCount: number;
 }
 
 export interface RenameImageData {
@@ -410,10 +465,22 @@ export interface RenameImageData {
   filename: string;
   /** Media type */
   mediaType: 'image';
-  /** Presigned URL for original image */
-  url: string;
-  /** Presigned URL for lower-res preview image */
+  /** MIME type */
+  mimeType: string;
+  /** File size in bytes */
+  size: number;
+  /** Upload timestamp */
+  uploadedAt: string;
+  /** Processing status */
+  status: MediaStatus;
+  /** Presigned URL for lower-res preview image (from lowres bucket) */
   previewUrl: string;
+  /** Image width in pixels */
+  width: number;
+  /** Image height in pixels */
+  height: number;
+  /** AI-generated description of the image */
+  description: string;
 }
 
 export interface RenameAudioData {
@@ -423,8 +490,20 @@ export interface RenameAudioData {
   filename: string;
   /** Media type */
   mediaType: 'audio';
-  /** Presigned URL for original audio */
+  /** MIME type */
+  mimeType: string;
+  /** File size in bytes */
+  size: number;
+  /** Upload timestamp */
+  uploadedAt: string;
+  /** Processing status */
+  status: MediaStatus;
+  /** Presigned URL for original audio (from uploads bucket) */
   url: string;
+  /** Audio duration in seconds */
+  duration: number;
+  /** Number of segments detected */
+  segmentCount: number;
 }
 
 export type RenameMediaData = RenameVideoData | RenameImageData | RenameAudioData;

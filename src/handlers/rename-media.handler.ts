@@ -148,10 +148,10 @@ function parseRequestBody(event: APIGatewayProxyEventV2): { mediaId: string; new
 }
 
 /**
- * Build type-specific rename response data
- * - Videos: previewUrl + thumbnailUrl
- * - Images: url (original) + previewUrl
- * - Audio: url (original)
+ * Build type-specific rename response data with rich metadata
+ * - Videos: previewUrl + thumbnailUrl (from lowres bucket), duration, dimensions, sceneCount
+ * - Images: previewUrl (from lowres bucket), dimensions, description
+ * - Audio: url (from uploads bucket - original high-res), duration, segmentCount
  */
 async function buildRenameResponseData(
   item: MediaItem,
@@ -163,12 +163,22 @@ async function buildRenameResponseData(
         mediaId: item.mediaId,
         filename: newFilename,
         mediaType: 'video',
+        mimeType: item.mimeType,
+        size: item.sizeBytes,
+        uploadedAt: item.createdAt,
+        status: item.status,
+        // Preview and thumbnail URLs from lowres bucket
         previewUrl: item.previewS3Key
-          ? await s3Service.generatePresignedGetUrl(item.previewS3Key)
+          ? await s3Service.generateLowresPresignedGetUrl(item.previewS3Key)
           : '',
         thumbnailUrl: item.thumbnailS3Key
-          ? await s3Service.generatePresignedGetUrl(item.thumbnailS3Key)
-          : '',
+          ? await s3Service.generateLowresPresignedGetUrl(item.thumbnailS3Key)
+          : null,
+        // Rich metadata from processing
+        duration: item.duration ?? 0,
+        width: item.width ?? 0,
+        height: item.height ?? 0,
+        sceneCount: item.sceneCount ?? 0,
       };
       return videoData;
     }
@@ -177,10 +187,18 @@ async function buildRenameResponseData(
         mediaId: item.mediaId,
         filename: newFilename,
         mediaType: 'image',
-        url: await s3Service.generatePresignedGetUrl(item.s3Key),
+        mimeType: item.mimeType,
+        size: item.sizeBytes,
+        uploadedAt: item.createdAt,
+        status: item.status,
+        // Preview URL from lowres bucket (no original URL exposed for images)
         previewUrl: item.previewS3Key
-          ? await s3Service.generatePresignedGetUrl(item.previewS3Key)
+          ? await s3Service.generateLowresPresignedGetUrl(item.previewS3Key)
           : '',
+        // Rich metadata from processing
+        width: item.width ?? 0,
+        height: item.height ?? 0,
+        description: item.description ?? '',
       };
       return imageData;
     }
@@ -189,7 +207,15 @@ async function buildRenameResponseData(
         mediaId: item.mediaId,
         filename: newFilename,
         mediaType: 'audio',
+        mimeType: item.mimeType,
+        size: item.sizeBytes,
+        uploadedAt: item.createdAt,
+        status: item.status,
+        // Original URL from uploads bucket (audio has no lowres version)
         url: await s3Service.generatePresignedGetUrl(item.s3Key),
+        // Rich metadata from processing
+        duration: item.duration ?? 0,
+        segmentCount: item.segmentCount ?? 0,
       };
       return audioData;
     }

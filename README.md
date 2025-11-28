@@ -1,190 +1,298 @@
 # QuickCut Media Upload Backend
 
-AWS Lambda backend for handling multipart media uploads to S3 with presigned URLs.
+AWS Lambda backend for media uploads and management.
 
-## Features
+## Environment Variables
 
-- Multipart uploads supporting files up to 5GB
-- Media management: list, search, delete, and rename
-- Automatic thumbnail handling for videos
-- Media type organization (videos/images/audios)
-- Batch deletion (up to 100 files)
-- Input sanitization and path traversal prevention
-
-## Project Structure
-
+```bash
+S3_BUCKET_NAME=quickcut-media-uploads        # Required - uploads bucket
+S3_LOWRES_BUCKET_NAME=quickcut-lowres        # Required - lowres previews bucket
+DYNAMODB_TABLE=quickcut-media                # Required - DynamoDB table
+AWS_REGION=us-east-1                         # Optional
 ```
-src/
-├── handlers/
-│   ├── router.handler.ts       # Routes requests to handlers
-│   ├── upload.handler.ts       # POST /upload/initiate
-│   ├── complete.handler.ts     # POST /upload/complete
-│   ├── list-media.handler.ts   # GET /media
-│   ├── search-media.handler.ts # GET /media/search
-│   ├── delete-media.handler.ts # DELETE /media
-│   └── rename-media.handler.ts # PATCH /media/rename
-├── services/
-│   ├── s3.service.ts           # S3 operations
-│   └── validation.service.ts   # Input validation
-├── utils/
-│   ├── auth.ts                 # Authentication context extraction
-│   ├── logger.ts               # Structured logging
-│   └── sanitize.ts             # Input sanitization
-├── errors/
-│   └── AppError.ts             # Custom error classes
-├── types/
-│   └── index.ts                # TypeScript interfaces
-└── config/
-    └── index.ts                # Environment configuration
-```
-
-## Authentication
-
-All endpoints require authentication via API Gateway Lambda authorizer. The authorizer validates the `qc_session` HTTP-only cookie and passes the authenticated user ID to Lambda functions.
-
-- Client requests must include `credentials: 'include'`
-- User ID is extracted from the validated session, not from request bodies
-- All file operations are scoped to the authenticated user
 
 ## API Endpoints
 
+All endpoints require authentication via API Gateway Lambda authorizer.
+
+---
+
 ### POST /upload/initiate
 
-Initiates multipart upload for one or more files. Each file can optionally include a thumbnail (for videos).
+Initiates multipart upload for one or more files.
 
-**Request**: JSON body with `files` array containing objects with `main` (required) and `thumbnail` (optional) properties. Each file object includes `filename`, `fileType`, and `fileSize`.
+**Request:**
+```json
+{
+  "files": [
+    {
+      "filename": "vacation.mp4",
+      "fileType": "video/mp4",
+      "fileSize": 52428800
+    },
+    {
+      "filename": "sunset.jpg",
+      "fileType": "image/jpeg",
+      "fileSize": 2097152
+    }
+  ]
+}
+```
 
-**Response**: Upload configurations with presigned URLs for each part, file IDs, and S3 keys.
+**Response:**
+```json
+{
+  "statusCode": 200,
+  "message": "Upload URLs generated successfully",
+  "data": {
+    "uploads": [
+      {
+        "fileId": "550e8400-e29b-41d4-a716-446655440000",
+        "s3Key": "user_abc123/videos/550e8400-e29b-41d4-a716-446655440000/vacation.mp4",
+        "bucket": "quickcut-media-uploads",
+        "uploadId": "VXBsb2FkSWQ...",
+        "parts": [
+          { "partNumber": 1, "url": "https://s3.amazonaws.com/..." },
+          { "partNumber": 2, "url": "https://s3.amazonaws.com/..." }
+        ],
+        "filename": "vacation.mp4",
+        "fileType": "video/mp4",
+        "expiresAt": "2025-11-28T01:00:00.000Z"
+      }
+    ],
+    "totalFiles": 2
+  }
+}
+```
+
+---
 
 ### POST /upload/complete
 
 Completes a multipart upload after all parts have been uploaded.
 
-**Request**: `fileId`, `s3Key`, `uploadId`, and `parts` array with `partNumber` and `etag` for each uploaded part.
+**Request:**
+```json
+{
+  "fileId": "550e8400-e29b-41d4-a716-446655440000",
+  "s3Key": "user_abc123/videos/550e8400-e29b-41d4-a716-446655440000/vacation.mp4",
+  "uploadId": "VXBsb2FkSWQ...",
+  "parts": [
+    { "partNumber": 1, "etag": "a54357aff0632cce46d942af68356b38" },
+    { "partNumber": 2, "etag": "0dc9f8eb616a1234567890abcdef1234" }
+  ]
+}
+```
 
-**Response**: Completed upload metadata including file location.
+**Response:**
+```json
+{
+  "statusCode": 200,
+  "message": "Upload completed successfully",
+  "data": {
+    "fileId": "550e8400-e29b-41d4-a716-446655440000",
+    "bucket": "quickcut-media-uploads",
+    "s3Key": "user_abc123/videos/550e8400-e29b-41d4-a716-446655440000/vacation.mp4",
+    "location": "https://quickcut-media-uploads.s3.amazonaws.com/...",
+    "metadata": {
+      "filename": "vacation.mp4",
+      "fileType": "video/mp4",
+      "uploadedAt": "2025-11-28T00:30:00.000Z"
+    }
+  }
+}
+```
+
+---
 
 ### GET /media
 
 Lists user's media files with optional filtering and pagination.
 
-**Query Parameters**:
-- `mediaType`: Filter by `visual` (videos + images), `videos`, `images`, or `audios`
+**Query Parameters:**
+- `mediaType`: `videos` | `images` | `audios` | `visual` (videos + images)
 - `limit`: Results per page (default: 50, max: 1000)
 - `continuationToken`: Pagination token
 
-**Response**: Array of files with presigned URLs. Videos include `thumbnailUrl` if thumbnail exists.
+**Request:**
+```
+GET /media?mediaType=videos&limit=10
+```
+
+**Response:**
+```json
+{
+  "statusCode": 200,
+  "message": "Media files retrieved successfully",
+  "data": {
+    "files": [
+      {
+        "mediaId": "550e8400-e29b-41d4-a716-446655440000",
+        "filename": "vacation.mp4",
+        "mediaType": "video",
+        "mimeType": "video/mp4",
+        "size": 52428800,
+        "uploadedAt": "2025-11-28T00:30:00.000Z",
+        "status": "ready",
+        "previewUrl": "https://quickcut-lowres.s3.amazonaws.com/...",
+        "thumbnailUrl": "https://quickcut-lowres.s3.amazonaws.com/...",
+        "duration": 127.4,
+        "width": 1280,
+        "height": 720,
+        "sceneCount": 5
+      },
+      {
+        "mediaId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        "filename": "sunset.jpg",
+        "mediaType": "image",
+        "mimeType": "image/jpeg",
+        "size": 2097152,
+        "uploadedAt": "2025-11-28T00:42:00.000Z",
+        "status": "ready",
+        "previewUrl": "https://quickcut-lowres.s3.amazonaws.com/...",
+        "width": 1080,
+        "height": 720,
+        "description": "A golden sunset over the ocean with silhouetted palm trees."
+      },
+      {
+        "mediaId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+        "filename": "podcast.mp3",
+        "mediaType": "audio",
+        "mimeType": "audio/mpeg",
+        "size": 8388608,
+        "uploadedAt": "2025-11-28T00:38:00.000Z",
+        "status": "ready",
+        "url": "https://quickcut-media-uploads.s3.amazonaws.com/...",
+        "duration": 185.6,
+        "segmentCount": 7
+      }
+    ],
+    "count": 3,
+    "hasMore": true,
+    "nextToken": "eyJQSyI6IlVTRVIjdXNlcl9hYmMxMjMi..."
+  }
+}
+```
+
+---
 
 ### GET /media/search
 
-Searches media files by partial filename match (case-insensitive).
+Searches media files by partial filename match.
 
-**Query Parameters**:
+**Query Parameters:**
 - `query` (required): Search string
-- `mediaType`: Filter type
+- `mediaType`: Filter by type
 - `limit`: Results per page
-- `continuationToken`: Pagination token
 
-**Response**: Matching files sorted by upload date (most recent first).
+**Request:**
+```
+GET /media/search?query=vacation&mediaType=videos
+```
+
+**Response:**
+```json
+{
+  "statusCode": 200,
+  "message": "Search completed successfully",
+  "data": {
+    "query": "vacation",
+    "mediaType": "videos",
+    "files": [
+      {
+        "mediaId": "550e8400-e29b-41d4-a716-446655440000",
+        "filename": "vacation.mp4",
+        "mediaType": "video",
+        "mimeType": "video/mp4",
+        "size": 52428800,
+        "uploadedAt": "2025-11-28T00:30:00.000Z",
+        "status": "ready",
+        "previewUrl": "https://quickcut-lowres.s3.amazonaws.com/...",
+        "thumbnailUrl": "https://quickcut-lowres.s3.amazonaws.com/...",
+        "duration": 127.4,
+        "width": 1280,
+        "height": 720,
+        "sceneCount": 5
+      }
+    ],
+    "count": 1,
+    "hasMore": false
+  }
+}
+```
+
+---
 
 ### DELETE /media
 
-Deletes one or more media files. Automatically deletes associated thumbnails for videos.
+Deletes one or more media files from S3 and DynamoDB.
 
-**Request**: `fileKeys` array (max 100 files).
+**Request:**
+```json
+{
+  "mediaIds": [
+    "550e8400-e29b-41d4-a716-446655440000",
+    "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+  ]
+}
+```
 
-**Response**: Success/failure status for each file. Supports partial success.
+**Response:**
+```json
+{
+  "statusCode": 200,
+  "message": "Files deleted successfully",
+  "data": {
+    "deleted": [
+      "550e8400-e29b-41d4-a716-446655440000",
+      "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+    ],
+    "failed": [],
+    "totalRequested": 2,
+    "successCount": 2,
+    "failureCount": 0
+  }
+}
+```
+
+---
 
 ### PATCH /media/rename
 
-Renames a media file. File extension cannot be changed.
+Renames a media file (updates DynamoDB only, S3 keys unchanged).
 
-**Request**: `fileKey` and `newFilename`.
-
-**Response**: New file key and presigned URLs. Returns 409 if target filename already exists.
-
-## S3 Key Structure
-
-Files are organized with the following structure:
-
-```
-{userId}/
-├── videos/{fileId}/{filename}
-├── images/{fileId}/{filename}
-├── audios/{fileId}/{filename}
-└── thumbnails/{fileId}/thumbnail.jpg
+**Request:**
+```json
+{
+  "mediaId": "550e8400-e29b-41d4-a716-446655440000",
+  "newFilename": "beach_trip.mp4"
+}
 ```
 
-Thumbnails are stored in a separate `thumbnails` directory, referenced by the same `fileId` as their parent video.
+**Response (Video):**
+```json
+{
+  "statusCode": 200,
+  "message": "File renamed successfully",
+  "data": {
+    "mediaId": "550e8400-e29b-41d4-a716-446655440000",
+    "filename": "beach_trip.mp4",
+    "mediaType": "video",
+    "mimeType": "video/mp4",
+    "size": 52428800,
+    "uploadedAt": "2025-11-28T00:30:00.000Z",
+    "status": "ready",
+    "previewUrl": "https://quickcut-lowres.s3.amazonaws.com/...",
+    "thumbnailUrl": "https://quickcut-lowres.s3.amazonaws.com/...",
+    "duration": 127.4,
+    "width": 1280,
+    "height": 720,
+    "sceneCount": 5
+  }
+}
+```
 
-## Validation Rules
-
-### Files
-- Max 10 files per upload request
-- File size: 1 byte to 5GB (configurable)
-- Filename max length: 255 characters
-- Must have file extension
-- Cannot start with dot
-
-### Filename Security
-
-**Blocked**:
-- Path traversal patterns: `../`, `..\\`, URL-encoded variants
-- Dangerous characters: `<>:"|?*`, control characters, backslashes
-- Dangerous extensions: `.exe`, `.bat`, `.sh`, `.php`, `.html`, and others
-
-**Allowed**:
-- Alphanumeric characters, dashes, underscores, spaces, dots
-- Forward slashes for subdirectories
-
-### Allowed MIME Types (Default)
-
-- **Images**: `image/jpeg`, `image/png`, `image/gif`, `image/webp`
-- **Videos**: `video/mp4`, `video/quicktime`, `video/x-msvideo`
-- **Audio**: `audio/mpeg`, `audio/wav`
-
-## Environment Variables
-
-### Required
-- `S3_BUCKET_NAME`: S3 bucket for uploads
-
-### Optional
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AWS_REGION` | `us-east-1` | AWS region |
-| `S3_PART_SIZE` | `10485760` (10MB) | Multipart upload part size |
-| `PRESIGNED_URL_EXPIRY` | `3600` (1 hour) | Presigned URL expiry in seconds |
-| `MAX_FILE_SIZE` | `5368709120` (5GB) | Maximum file size |
-| `MIN_FILE_SIZE` | `1` | Minimum file size |
-| `MAX_FILES_PER_REQUEST` | `10` | Max files per upload request |
-| `MAX_FILENAME_LENGTH` | `255` | Max filename length |
-| `ALLOWED_MIME_TYPES` | See above | Comma-separated MIME types |
-| `LOG_LEVEL` | `info` | Logging level: debug, info, warn, error |
-| `CORS_ORIGIN` | `*` | CORS allowed origin |
-
-## Error Handling
-
-### HTTP Status Codes
-
-| Code | Description |
-|------|-------------|
-| 200 | Success |
-| 400 | Validation error |
-| 401 | Unauthorized |
-| 403 | Forbidden |
-| 404 | Not found |
-| 405 | Method not allowed |
-| 409 | Conflict (file already exists) |
-| 429 | Rate limit exceeded |
-| 500 | Internal server error |
-
-### Error Codes
-
-- `INVALID_REQUEST`, `INVALID_FILE_TYPE`, `FILE_TOO_LARGE`, `FILE_TOO_SMALL`
-- `TOO_MANY_FILES`, `INVALID_FILENAME`, `MISSING_REQUIRED_FIELD`
-- `INVALID_FILE_ID`, `INVALID_UPLOAD_ID`, `INVALID_PARTS`
-- `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`
-- `RATE_LIMIT_EXCEEDED`, `S3_SERVICE_ERROR`, `INTERNAL_SERVER_ERROR`
+---
 
 ## Build and Deploy
 
@@ -194,31 +302,3 @@ npm run build        # Compile TypeScript
 npm run package      # Build and create function.zip
 npm run deploy       # Deploy to Lambda
 ```
-
-**Lambda Configuration**:
-- Handler: `dist/index.handler`
-- Runtime: Node.js 22.x
-
-## Development
-
-```bash
-npm test             # Run tests
-npm run test:watch   # Watch mode
-npm run test:coverage # Coverage report
-npm run lint         # ESLint check
-npm run lint:fix     # Auto-fix linting
-```
-
-## IAM Permissions Required
-
-The Lambda execution role needs:
-- `s3:CreateMultipartUpload`, `s3:AbortMultipartUpload`, `s3:CompleteMultipartUpload`
-- `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:CopyObject`
-- `s3:ListBucket`, `s3:HeadObject`, `s3:ListMultipartUploadParts`
-- `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
-
-## Tech Stack
-
-- **Runtime**: Node.js 22.x, TypeScript
-- **Cloud**: AWS Lambda, S3, API Gateway
-- **Dependencies**: @aws-sdk/client-s3, @aws-sdk/s3-request-presigner, uuid

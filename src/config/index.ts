@@ -42,6 +42,7 @@ function getEnvVarNumber(key: string, defaultValue: number): number {
 
 export const s3Config: S3Config = {
   bucketName: getEnvVar('S3_BUCKET_NAME'),
+  lowresBucketName: getEnvVar('S3_LOWRES_BUCKET_NAME'),
   region: getEnvVarOptional('AWS_REGION', 'us-east-1'),
   keyPrefix: getEnvVarOptional('S3_KEY_PREFIX', 'uploads'),
   partSize: getEnvVarNumber('S3_PART_SIZE', 10 * 1024 * 1024), // 10MB default
@@ -104,6 +105,10 @@ export function validateConfig(): void {
   // Validate S3 config
   if (!s3Config.bucketName) {
     throw new Error('S3_BUCKET_NAME must be configured');
+  }
+
+  if (!s3Config.lowresBucketName) {
+    throw new Error('S3_LOWRES_BUCKET_NAME must be configured');
   }
 
   if (s3Config.partSize < 5 * 1024 * 1024) {

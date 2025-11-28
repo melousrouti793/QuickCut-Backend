@@ -48,6 +48,7 @@ export class S3Service {
     logger.info('S3 service initialized', {
       region: s3Config.region,
       bucket: s3Config.bucketName,
+      lowresBucket: s3Config.lowresBucketName,
     });
   }
 
@@ -281,11 +282,28 @@ export class S3Service {
   }
 
   /**
-   * Generate a presigned GET URL for downloading a file
+   * Generate a presigned GET URL for downloading a file from the uploads bucket
    */
   async generatePresignedGetUrl(s3Key: string): Promise<string> {
     const command = new GetObjectCommand({
       Bucket: s3Config.bucketName,
+      Key: s3Key,
+    });
+
+    const url = await getSignedUrl(this.s3Client, command, {
+      expiresIn: s3Config.presignedUrlExpiry,
+    });
+
+    return url;
+  }
+
+  /**
+   * Generate a presigned GET URL for downloading a file from the lowres bucket
+   * Used for preview videos, thumbnails, and preview images
+   */
+  async generateLowresPresignedGetUrl(s3Key: string): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: s3Config.lowresBucketName,
       Key: s3Key,
     });
 
@@ -484,10 +502,10 @@ export class S3Service {
   }
 
   /**
-   * Delete a single object from S3 by key
+   * Delete a single object from S3 uploads bucket by key
    */
   async deleteObject(s3Key: string): Promise<void> {
-    logger.debug('Deleting object from S3', { s3Key });
+    logger.debug('Deleting object from S3 uploads bucket', { s3Key, bucket: s3Config.bucketName });
 
     try {
       const command = new DeleteObjectCommand({
@@ -495,10 +513,33 @@ export class S3Service {
         Key: s3Key,
       });
       await this.s3Client.send(command);
-      logger.debug('Object deleted successfully', { s3Key });
+      logger.debug('Object deleted successfully from uploads bucket', { s3Key });
     } catch (error) {
-      logger.error('Failed to delete object from S3', error, { s3Key });
+      logger.error('Failed to delete object from S3 uploads bucket', error, { s3Key });
       throw new S3ServiceError('Failed to delete object from S3', {
+        error: error instanceof Error ? error.message : String(error),
+        s3Key,
+      });
+    }
+  }
+
+  /**
+   * Delete a single object from S3 lowres bucket by key
+   * Used for deleting preview videos, thumbnails, and preview images
+   */
+  async deleteLowresObject(s3Key: string): Promise<void> {
+    logger.debug('Deleting object from S3 lowres bucket', { s3Key, bucket: s3Config.lowresBucketName });
+
+    try {
+      const command = new DeleteObjectCommand({
+        Bucket: s3Config.lowresBucketName,
+        Key: s3Key,
+      });
+      await this.s3Client.send(command);
+      logger.debug('Object deleted successfully from lowres bucket', { s3Key });
+    } catch (error) {
+      logger.error('Failed to delete object from S3 lowres bucket', error, { s3Key });
+      throw new S3ServiceError('Failed to delete object from S3 lowres bucket', {
         error: error instanceof Error ? error.message : String(error),
         s3Key,
       });
