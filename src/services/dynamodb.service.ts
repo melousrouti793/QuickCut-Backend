@@ -8,6 +8,7 @@ import {
   DynamoDBDocumentClient,
   BatchWriteCommand,
   BatchWriteCommandInput,
+  BatchGetCommand,
   QueryCommand,
   GetCommand,
   UpdateCommand,
@@ -353,6 +354,77 @@ export class DynamoDBService {
         error: error instanceof Error ? error.message : String(error),
         userId,
         mediaId,
+      });
+    }
+  }
+
+  /**
+   * Batch get multiple media items by IDs
+   * Used by timeline and playback endpoints for efficient fetching
+   * Returns only items that exist, belong to the user, and have status "ready"
+   */
+  async batchGetMediaByIds(
+    userId: string,
+    mediaIds: string[]
+  ): Promise<MediaItem[]> {
+    if (mediaIds.length === 0) {
+      return [];
+    }
+
+    const endTimer = logger.startTimer('batchGetMediaByIds', { userId, mediaIdCount: mediaIds.length });
+
+    try {
+      // DynamoDB BatchGetItem has a limit of 100 items per request
+      const MAX_BATCH_GET_ITEMS = 100;
+      const allItems: MediaItem[] = [];
+
+      // Split into batches of 100
+      const batches: string[][] = [];
+      for (let i = 0; i < mediaIds.length; i += MAX_BATCH_GET_ITEMS) {
+        batches.push(mediaIds.slice(i, i + MAX_BATCH_GET_ITEMS));
+      }
+
+      for (const batch of batches) {
+        const keys = batch.map((mediaId) => ({
+          PK: `USER#${userId}`,
+          SK: `MEDIA#${mediaId}`,
+        }));
+
+        const command = new BatchGetCommand({
+          RequestItems: {
+            [dynamoDBConfig.tableName]: {
+              Keys: keys,
+            },
+          },
+        });
+
+        const response = await this.docClient.send(command);
+        const items = response.Responses?.[dynamoDBConfig.tableName] || [];
+
+        // Filter to only "ready" status items
+        const readyItems = (items as MediaItem[]).filter(
+          (item) => item.status === 'ready'
+        );
+
+        allItems.push(...readyItems);
+      }
+
+      endTimer();
+      logger.debug('Batch get media completed', {
+        userId,
+        requestedCount: mediaIds.length,
+        returnedCount: allItems.length,
+      });
+
+      return allItems;
+    } catch (error) {
+      logger.error('Failed to batch get media items', error, {
+        userId,
+        mediaIdCount: mediaIds.length,
+      });
+      throw new DynamoDBServiceError('Failed to batch get media items', {
+        error: error instanceof Error ? error.message : String(error),
+        userId,
       });
     }
   }

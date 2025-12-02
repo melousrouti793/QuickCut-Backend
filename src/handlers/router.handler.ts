@@ -6,10 +6,12 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { handler as initiateHandler } from './upload.handler';
 import { handler as completeHandler } from './complete.handler';
-import { handler as listMediaHandler } from './list-media.handler';
 import { handler as deleteMediaHandler } from './delete-media.handler';
 import { handler as renameMediaHandler } from './rename-media.handler';
 import { handler as searchMediaHandler } from './search-media.handler';
+import { handler as libraryHandler } from './library.handler';
+import { handler as timelineHandler } from './timeline.handler';
+import { handler as playbackHandler } from './playback.handler';
 import { logger } from '../utils/logger';
 
 /**
@@ -49,16 +51,33 @@ export async function handler(
       logger.debug('Routing to complete handler');
       return await completeHandler(event);
 
-    case '/media':
-      if (method === 'GET') {
-        logger.debug('Routing to list media handler');
-        return await listMediaHandler(event);
-      } else if (method === 'DELETE') {
-        logger.debug('Routing to delete media handler');
-        return await deleteMediaHandler(event);
-      } else {
-        return methodNotAllowedResponse(['GET', 'DELETE'], method);
+    case '/library':
+      if (method !== 'GET') {
+        return methodNotAllowedResponse(['GET'], method);
       }
+      logger.debug('Routing to library handler');
+      return await libraryHandler(event);
+
+    case '/timeline':
+      if (method !== 'POST') {
+        return methodNotAllowedResponse(['POST'], method);
+      }
+      logger.debug('Routing to timeline handler');
+      return await timelineHandler(event);
+
+    case '/playback':
+      if (method !== 'POST') {
+        return methodNotAllowedResponse(['POST'], method);
+      }
+      logger.debug('Routing to playback handler');
+      return await playbackHandler(event);
+
+    case '/media':
+      if (method !== 'DELETE') {
+        return methodNotAllowedResponse(['DELETE'], method);
+      }
+      logger.debug('Routing to delete media handler');
+      return await deleteMediaHandler(event);
 
     case '/media/rename':
       if (method !== 'PATCH') {
@@ -92,6 +111,9 @@ export async function handler(
             availableRoutes: [
               '/upload/initiate',
               '/upload/complete',
+              '/library',
+              '/timeline',
+              '/playback',
               '/media',
               '/media/rename',
               '/media/search',

@@ -349,6 +349,30 @@ export interface MediaItem {
   description?: string;
   /** Number of segments detected (audio only) */
   segmentCount?: number;
+  /** S3 key for waveform visualization (audio only) */
+  waveformS3Key?: string;
+  /** S3 key for timeline thumbnail (images only) */
+  timelineThumbS3Key?: string;
+  /** Scrub thumbnails data (videos only) */
+  scrubThumbs?: {
+    s3Key: string;
+    vttS3Key: string;
+    width: number;
+    height: number;
+    interval: number;
+    count: number;
+  };
+  /** Timeline thumbnails data (videos only) */
+  timelineThumbs?: {
+    s3Key: string;
+    vttS3Key: string;
+    width: number;
+    height: number;
+    interval: number;
+    count: number;
+  };
+  /** S3 prefix for video chunks (videos only) */
+  chunksS3Prefix?: string;
 }
 
 /** DynamoDB user profile record */
@@ -636,4 +660,146 @@ export enum HttpStatus {
   INTERNAL_SERVER_ERROR = 500,
   BAD_GATEWAY = 502,
   SERVICE_UNAVAILABLE = 503,
+}
+
+// ============================================================================
+// Library Endpoint Types (GET /library - simplified for browsing)
+// ============================================================================
+
+export interface LibraryAudioFile {
+  mediaId: string;
+  filename: string;
+  mediaType: 'audio';
+  fileSize: number;
+  duration: number;
+}
+
+export interface LibraryImageFile {
+  mediaId: string;
+  filename: string;
+  mediaType: 'image';
+  previewUrl: string | null;
+  width: number;
+  height: number;
+  fileSize: number;
+  aspectRatio: number;
+}
+
+export interface LibraryVideoFile {
+  mediaId: string;
+  filename: string;
+  mediaType: 'video';
+  thumbnailUrl: string | null;
+  width: number;
+  height: number;
+  fileSize: number;
+  duration: number;
+  aspectRatio: number;
+}
+
+export type LibraryMediaFile = LibraryAudioFile | LibraryImageFile | LibraryVideoFile;
+
+export interface ListLibrarySuccessResponse {
+  statusCode: 200;
+  message: string;
+  data: {
+    files: LibraryMediaFile[];
+    count: number;
+    hasMore: boolean;
+    nextToken?: string;
+  };
+}
+
+// ============================================================================
+// Timeline Endpoint Types (POST /timeline - rich metadata for editing)
+// ============================================================================
+
+/** Thumbnail sprite data for scrubThumbs and timelineThumbs */
+export interface ThumbnailSpriteData {
+  url: string;
+  vttUrl: string;
+  width: number;
+  height: number;
+  interval: number;
+  count: number;
+}
+
+export interface TimelineAudioFile {
+  mediaId: string;
+  filename: string;
+  mediaType: 'audio';
+  waveformUrl: string | null;
+  fileSize: number;
+  duration: number;
+}
+
+export interface TimelineImageFile {
+  mediaId: string;
+  filename: string;
+  mediaType: 'image';
+  previewUrl: string | null;
+  width: number;
+  height: number;
+  fileSize: number;
+  aspectRatio: number;
+  timelineThumbUrl: string | null;
+}
+
+export interface TimelineVideoFile {
+  mediaId: string;
+  filename: string;
+  mediaType: 'video';
+  thumbnailUrl: string | null;
+  width: number;
+  height: number;
+  fileSize: number;
+  duration: number;
+  aspectRatio: number;
+  scrubThumbs: ThumbnailSpriteData | null;
+  timelineThumbs: ThumbnailSpriteData | null;
+}
+
+export type TimelineMediaFile = TimelineAudioFile | TimelineImageFile | TimelineVideoFile;
+
+export interface TimelineSuccessResponse {
+  statusCode: 200;
+  message: string;
+  data: {
+    files: TimelineMediaFile[];
+    count: number;
+    requestedCount: number;
+  };
+}
+
+// ============================================================================
+// Playback Endpoint Types (POST /playback - video chunks and audio playback)
+// ============================================================================
+
+export interface PlaybackChunk {
+  index: number;
+  url: string;
+}
+
+export interface PlaybackVideoItem {
+  mediaId: string;
+  mediaType: 'video';
+  chunks: PlaybackChunk[];
+}
+
+export interface PlaybackAudioItem {
+  mediaId: string;
+  mediaType: 'audio';
+  url: string;
+}
+
+export type PlaybackItem = PlaybackVideoItem | PlaybackAudioItem;
+
+export interface PlaybackSuccessResponse {
+  statusCode: 200;
+  message: string;
+  data: {
+    items: PlaybackItem[];
+    count: number;
+    requestedCount: number;
+  };
 }

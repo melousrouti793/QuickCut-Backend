@@ -70,20 +70,45 @@ export async function handler(
     logger.info('Step 2: Validation passed');
 
     // Convert mediaType filter to DynamoDB format (singular form)
-    const mediaType = convertMediaTypeFilter(queryParams.mediaType);
+    const mediaTypeFilter = convertMediaTypeFilter(queryParams.mediaType);
     const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
 
     // Step 3: Search media files from DynamoDB
     logger.info('Step 3: Searching DynamoDB', {
       userId,
       query: queryParams.query,
-      mediaType,
+      mediaType: mediaTypeFilter,
       limit,
     });
-    const items = await dynamoDBService.searchMediaByFilename(userId, queryParams.query, {
-      mediaType,
-      limit,
-    });
+
+    let items: MediaItem[];
+
+    // Handle "visual" filter with two separate queries (video + image)
+    if (mediaTypeFilter === 'visual') {
+      const halfLimit = Math.ceil(limit / 2);
+
+      const [videoItems, imageItems] = await Promise.all([
+        dynamoDBService.searchMediaByFilename(userId, queryParams.query, {
+          mediaType: 'video',
+          limit: halfLimit,
+        }),
+        dynamoDBService.searchMediaByFilename(userId, queryParams.query, {
+          mediaType: 'image',
+          limit: halfLimit,
+        }),
+      ]);
+
+      // Merge and sort by createdAt descending, limit to requested size
+      items = [...videoItems, ...imageItems]
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, limit);
+    } else {
+      items = await dynamoDBService.searchMediaByFilename(userId, queryParams.query, {
+        mediaType: mediaTypeFilter as MediaType | undefined,
+        limit,
+      });
+    }
+
     logger.info('Step 3: DynamoDB search completed', { matchCount: items.length });
 
     // Step 4: Generate presigned URLs and build type-specific responses
@@ -152,17 +177,19 @@ function parseQueryParameters(event: APIGatewayProxyEventV2): {
 
 /**
  * Convert media type filter from plural/aggregate form to singular DynamoDB form
+ * Returns 'visual' for visual filter (images + videos), which requires special handling
  */
-function convertMediaTypeFilter(filter?: string): MediaType | undefined {
+function convertMediaTypeFilter(filter?: string): MediaType | 'visual' | undefined {
   if (!filter) return undefined;
 
-  const filterMap: Record<string, MediaType | undefined> = {
+  const filterMap: Record<string, MediaType | 'visual' | undefined> = {
     video: 'video',
     videos: 'video',
     image: 'image',
     images: 'image',
     audio: 'audio',
     audios: 'audio',
+    visual: 'visual',
   };
 
   return filterMap[filter.toLowerCase()];
